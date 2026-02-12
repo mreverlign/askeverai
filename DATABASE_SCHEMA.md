@@ -431,9 +431,3 @@ FROM dbstat
 GROUP BY name
 ORDER BY size_bytes DESC;
 ```
-
----
-
-**Schema Version**: 1.0
-**Last Updated**: December 3, 2025
-**Compatibility**: SQLite 3.0+

@@ -10,16 +10,16 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("REBUILDING RAG INDICES WITH FOCUSED STRATEGY")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     # Initialize embedder with optimized weights
     # Higher BM25 weight for better keyword matching
     embedder = FocusedColumnEmbedder(
         model_name="sentence-transformers/all-MiniLM-L6-v2",  # Faster, optimized for short text
         bm25_weight=0.7,  # Favor keyword matching
-        semantic_weight=0.4  # Supplement with semantic
+        semantic_weight=0.4,  # Supplement with semantic
     )
 
     # Load CSV files
@@ -41,7 +41,9 @@ def main():
 
     logger.info("\n🗂️ Step 3: Loading Data Model...")
     try:
-        embedder.load_and_embed_datamodel("HighTower_Metadata(HighTower_Data_Model) (2).csv")
+        embedder.load_and_embed_datamodel(
+            "HighTower_Metadata(HighTower_Data_Model) (2).csv"
+        )
         logger.info("✅ Data model loaded and embedded")
     except Exception as e:
         logger.error(f"❌ Error loading data model: {e}")
@@ -59,7 +61,7 @@ def main():
         "project orders",
         "dim_project fact_transaction_detail",
         "client sales",
-        "join project transaction"
+        "join project transaction",
     ]
 
     for query in test_queries:
@@ -68,16 +70,20 @@ def main():
         # Search metadata
         metadata_results = embedder.search_metadata(query, top_k=3)
         if metadata_results:
-            logger.info(f"  📋 Top metadata match: {metadata_results[0]['table_name']}.{metadata_results[0]['column_name']} (score: {metadata_results[0]['hybrid_score']:.3f})")
+            logger.info(
+                f"  📋 Top metadata match: {metadata_results[0]['table_name']}.{metadata_results[0]['column_name']} (score: {metadata_results[0]['hybrid_score']:.3f})"
+            )
 
         # Search relationships
         rel_results = embedder.search_relationships(query, top_k=3)
         if rel_results:
-            logger.info(f"  🔗 Top relationship: {rel_results[0]['primary_table']} -> {rel_results[0]['foreign_table']} (score: {rel_results[0]['hybrid_score']:.3f})")
+            logger.info(
+                f"  🔗 Top relationship: {rel_results[0]['primary_table']} -> {rel_results[0]['foreign_table']} (score: {rel_results[0]['hybrid_score']:.3f})"
+            )
 
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info("✅ REBUILD COMPLETE!")
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"\nTo use the new indices:")
     logger.info(f"1. Update app_rag_enhanced.py to use 'rag_indices_focused' directory")
     logger.info(f"2. Or run: mv rag_indices_focused rag_indices_hybrid")

@@ -5,12 +5,10 @@ from database_tools import DatabaseTools
 from rag_metadata_embedder_focused import FocusedColumnEmbedder as MetadataEmbedder
 from rag_enhanced_agent import RAGEnhancedReActAgent
 from config import Config
-import plotly.express as px
-import plotly.graph_objects as go
-import json
 from pathlib import Path
 import logging
 from user_database import UserDatabase
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,1003 +20,766 @@ class WebSocketErrorFilter(logging.Filter):
         return not ('WebSocketClosedError' in message or
                    'Stream is closed' in message)
 
-# Apply filter to tornado and asyncio loggers
 logging.getLogger('tornado.application').addFilter(WebSocketErrorFilter())
 logging.getLogger('asyncio').addFilter(WebSocketErrorFilter())
 logging.getLogger('tornado.general').addFilter(WebSocketErrorFilter())
 
 # Page config
 st.set_page_config(
-    page_title="RAG-Enhanced NLQ System",
-    page_icon="🤖",
-    layout="wide"
+    page_title="AskEver AI",
+    page_icon="💬",
+    layout="centered"
 )
 
-# Custom CSS
+# Modern Marketing UI CSS - Inspired by Notion, Linear, Vercel
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        padding: 1rem 0;
+    /* Import Modern Font */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    /* Global Reset */
+    * {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
     }
-    .sub-header {
-        font-size: 1.2rem;
-        color: #666;
+
+    /* Clean White Background */
+    .main {
+        background: #ffffff;
+        padding: 2rem 1rem;
+    }
+
+    /* Hide Streamlit Elements */
+    #MainMenu, footer, header {visibility: hidden;}
+
+    /* Elegant Header */
+    .app-header {
         text-align: center;
+        padding: 3rem 1rem 2rem;
         margin-bottom: 2rem;
     }
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 0.5rem 0;
+
+    .app-title {
+        font-size: 3rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 1rem;
+        letter-spacing: -0.03em;
+        line-height: 1.2;
     }
-    .success-box {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin: 1rem 0;
+
+    .app-subtitle {
+        font-size: 1.125rem;
+        color: #64748b;
+        font-weight: 500;
+        max-width: 600px;
+        margin: 0 auto;
     }
-    .info-box {
-        background-color: #d1ecf1;
-        border: 1px solid #bee5eb;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin: 1rem 0;
+
+    /* Top Bar - User & Logout */
+    .top-bar {
+        position: fixed;
+        top: 0;
+        right: 0;
+        left: 0;
+        background: white;
+        padding: 1rem 2rem;
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 1rem;
+        border-bottom: 1px solid #f1f5f9;
+        z-index: 1000;
     }
-    .warning-box {
-        background-color: #fff3cd;
-        border: 1px solid #ffeeba;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin: 1rem 0;
+
+    .user-badge {
+        background: #f1f5f9;
+        color: #475569;
+        padding: 0.5rem 1rem;
+        border-radius: 100px;
+        font-size: 0.875rem;
+        font-weight: 600;
+        border: 1px solid #e2e8f0;
+    }
+
+    .logout-btn {
+        background: white;
+        color: #64748b;
+        padding: 0.5rem 1rem;
+        border-radius: 100px;
+        font-size: 0.875rem;
+        font-weight: 600;
+        border: 1px solid #e2e8f0;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .logout-btn:hover {
+        background: #f8fafc;
+        border-color: #cbd5e1;
+    }
+
+    /* Query Bubble - Gradient Style */
+    .message-bubble {
+        background: white;
+        padding: 1rem 1.5rem;
+        border-radius: 16px;
+        margin: 1.5rem 0;
+        border: 1px solid #f1f5f9;
+    }
+
+    .user-query {
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+        color: white !important;
+        font-size: 1.125rem;
+        font-weight: 500;
+        border: none;
+        box-shadow: 0 4px 20px rgba(99, 102, 241, 0.25);
+    }
+
+    /* Ensure All Text is Visible */
+    .stMarkdown {
+        color: #0f172a !important;
+    }
+
+    .stMarkdown p, .stMarkdown div, .stMarkdown span {
+        color: #0f172a !important;
+    }
+
+    .stMarkdown strong, .stMarkdown b {
+        color: #0f172a !important;
+        font-weight: 700 !important;
+    }
+
+    .section-header {
+        font-size: 0.8125rem;
+        font-weight: 700;
+        color: #64748b !important;
+        margin: 1.5rem 0 0.75rem 0;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+    }
+
+    /* Beautiful Code Blocks */
+    .stCodeBlock {
+        background: #0f172a !important;
+        border: 1px solid #1e293b !important;
+        border-radius: 12px !important;
+        margin: 1rem 0 !important;
+        overflow: hidden;
+    }
+
+    .stCodeBlock code {
+        color: #e2e8f0 !important;
+        font-family: 'SF Mono', 'Monaco', 'Menlo', monospace !important;
+        font-size: 0.875rem !important;
+        line-height: 1.7 !important;
+    }
+
+    /* Modern Input Field */
+    .stTextInput input {
+        border-radius: 12px;
+        border: 2px solid #e2e8f0;
+        padding: 1rem 1.25rem;
+        font-size: 1rem;
+        background: white;
+        color: #0f172a !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .stTextInput input::placeholder {
+        color: #94a3b8;
+    }
+
+    .stTextInput input:focus {
+        border-color: #6366f1;
+        box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+        outline: none;
+    }
+
+    /* Gradient Buttons */
+    .stButton > button {
+        border-radius: 12px;
+        padding: 1rem 2rem;
+        font-weight: 600;
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+        color: white !important;
+        border: none;
+        width: 100%;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+        font-size: 0.9375rem;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 24px rgba(99, 102, 241, 0.4);
+    }
+
+    /* Logout button override - make it match user badge */
+    .logout-button-container .stButton > button {
+        background: #f1f5f9 !important;
+        color: #475569 !important;
+        padding: 0.5rem 1rem !important;
+        border-radius: 100px !important;
+        font-size: 0.875rem !important;
+        font-weight: 600 !important;
+        border: 1px solid #e2e8f0 !important;
+        box-shadow: none !important;
+        height: auto !important;
+        white-space: nowrap !important;
+        width: auto !important;
+        min-width: auto !important;
+    }
+
+    .logout-button-container .stButton > button:hover {
+        background: #e2e8f0 !important;
+        transform: none !important;
+        box-shadow: none !important;
+    }
+
+    /* Beautiful Stats Badges */
+    .stats-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+        color: #475569;
+        padding: 0.5rem 1rem;
+        border-radius: 100px;
+        font-size: 0.875rem;
+        font-weight: 600;
+        margin-right: 0.75rem;
+        margin-bottom: 0.5rem;
+        border: 1px solid #e2e8f0;
+    }
+
+    /* Elegant Divider */
+    .divider {
+        height: 1px;
+        background: linear-gradient(to right, transparent, #e2e8f0 20%, #e2e8f0 80%, transparent);
+        margin: 2.5rem 0;
+    }
+
+    /* Beautiful Login Screen */
+    .login-container {
+        max-width: 420px;
+        margin: 6rem auto;
+        text-align: center;
+    }
+
+    .login-title {
+        font-size: 2.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.75rem;
+        letter-spacing: -0.03em;
+    }
+
+    .login-subtitle {
+        color: #64748b;
+        margin-bottom: 2.5rem;
+        font-size: 1.0625rem;
+    }
+
+    /* Minimal Feedback Section */
+    .feedback-section {
+        background: #f8fafc;
+        padding: 1.5rem;
+        border-radius: 12px;
+        margin-top: 1.5rem;
+        border: 1px solid #f1f5f9;
+    }
+
+    /* Download Button - Success Style */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #10b981 0%, #06b6d4 100%);
+        color: white !important;
+        border-radius: 12px;
+        padding: 0.75rem 1.5rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        border: none;
+        box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .stDownloadButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+    }
+
+    /* Clean Data Tables */
+    .dataframe {
+        border: 1px solid #f1f5f9 !important;
+        border-radius: 12px !important;
+        overflow: hidden;
+        font-size: 0.875rem;
+        color: #0f172a !important;
+    }
+
+    .dataframe th {
+        background: #f8fafc !important;
+        color: #475569 !important;
+        font-weight: 600 !important;
+        padding: 0.75rem !important;
+    }
+
+    .dataframe td {
+        padding: 0.75rem !important;
+        color: #0f172a !important;
+    }
+
+    /* Beautiful Alert Boxes */
+    .stInfo {
+        background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+        border-left: 3px solid #3b82f6;
+        border-radius: 12px;
+        color: #1e40af !important;
+        padding: 1rem 1.25rem;
+    }
+
+    .stSuccess {
+        background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+        border-left: 3px solid #10b981;
+        border-radius: 12px;
+        color: #065f46 !important;
+        padding: 1rem 1.25rem;
+    }
+
+    .stError {
+        background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+        border-left: 3px solid #ef4444;
+        border-radius: 12px;
+        color: #991b1b !important;
+        padding: 1rem 1.25rem;
+    }
+
+    /* Minimal Expander */
+    .streamlit-expanderHeader {
+        background: #f8fafc;
+        border: 1px solid #f1f5f9;
+        border-radius: 12px;
+        font-weight: 600;
+        color: #475569 !important;
+        padding: 0.875rem 1rem;
+        transition: all 0.2s;
+    }
+
+    .streamlit-expanderHeader:hover {
+        background: #f1f5f9;
+    }
+
+    /* Loading Spinner */
+    .stSpinner > div {
+        border-top-color: #6366f1 !important;
+    }
+
+    /* Logout Button - Secondary Style */
+    .stButton > button[kind="secondary"] {
+        background: #f8fafc;
+        color: #475569 !important;
+        border: 1px solid #e2e8f0;
+        box-shadow: none;
+    }
+
+    .stButton > button[kind="secondary"]:hover {
+        background: #f1f5f9;
+        box-shadow: none;
+    }
+
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] {
+        background: #fafafa;
+        border-right: 1px solid #f1f5f9;
+    }
+
+    [data-testid="stSidebar"] .stMarkdown {
+        color: #0f172a !important;
+    }
+
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
+        color: #0f172a !important;
+        font-weight: 700;
+    }
+
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] div,
+    [data-testid="stSidebar"] span {
+        color: #0f172a !important;
+    }
+
+    /* Expander text in sidebar */
+    [data-testid="stSidebar"] .streamlit-expanderHeader {
+        color: #0f172a !important;
+        background: white;
+    }
+
+    [data-testid="stSidebar"] .streamlit-expanderContent {
+        background: white;
+        border: 1px solid #f1f5f9;
+        border-radius: 0 0 12px 12px;
+    }
+
+    /* Caption text */
+    .caption, [data-testid="stCaptionContainer"], .stCaption {
+        color: #64748b !important;
+        font-size: 0.8125rem !important;
+    }
+
+    /* Recent queries heading */
+    .sidebar-heading {
+        font-size: 0.875rem;
+        font-weight: 700;
+        color: #0f172a !important;
+        margin: 1.5rem 0 1rem 0;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
+def format_sql_for_display(sql):
+    """Format SQL for better readability (PostgreSQL style)"""
+    if not sql:
+        return sql
+
+    formatted = sql.strip()
+
+    # Format keywords with proper spacing
+    keywords = [
+        'SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN',
+        'INNER JOIN', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
+        'AND', 'OR', 'AS', 'ON', 'IN', 'NOT', 'NULL', 'IS', 'UNION'
+    ]
+
+    for keyword in keywords:
+        formatted = formatted.replace(f' {keyword} ', f'\n{keyword} ')
+        formatted = formatted.replace(f' {keyword.lower()} ', f'\n{keyword} ')
+
+    # Clean up extra spaces and empty lines
+    lines = [line.strip() for line in formatted.split('\n') if line.strip()]
+    formatted = '\n'.join(lines)
+
+    return formatted
+
+
 @st.cache_resource
 def initialize_system():
-    """
-    Initialize all system components
-    """
+    """Initialize all system components"""
     try:
-        # Initialize LLM client
         llm_client = LLMClient()
-
-        # Initialize database tools with config
         db_tools = DatabaseTools(Config.DB_CONFIG)
         db_tools.connect()
-
-        # Initialize embedder
         embedder = MetadataEmbedder()
 
-        # Try to load existing indices
         indices_dir = "./rag_indices_focused"
         if Path(indices_dir).exists():
-            logger.info("Loading existing focused RAG indices...")
             embedder.load_indices(indices_dir)
         else:
-            logger.info("Creating new focused RAG indices...")
-            # Load CSVs with correct filenames
             embedder.load_and_embed_metadata("HighTower_Metadata(Metadata) (1).csv")
             embedder.load_and_embed_relationships("HighTower_Metadata(Relationships).csv")
             embedder.load_and_embed_datamodel("HighTower_Metadata(HighTower_Data_Model) (2).csv")
             embedder.save_indices(indices_dir)
 
-        # Initialize RAG-enhanced agent
         agent = RAGEnhancedReActAgent(llm_client, db_tools, embedder)
-
-        # Initialize user database
         user_db = UserDatabase()
 
         return {
             'agent': agent,
-            'llm_client': llm_client,
             'db_tools': db_tools,
-            'embedder': embedder,
             'user_db': user_db,
             'status': 'success'
         }
 
     except Exception as e:
         logger.error(f"Error initializing system: {e}")
-        return {
-            'status': 'error',
-            'error': str(e)
-        }
+        return {'status': 'error', 'error': str(e)}
 
 
-def get_username():
-    """Display username entry dialog and return username"""
-    if 'username' not in st.session_state or not st.session_state['username']:
-        st.markdown('<div class="main-header">🤖 Welcome to RAG-Enhanced NLQ System</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub-header">Please enter your username to continue</div>', unsafe_allow_html=True)
+def show_login():
+    """Display login screen"""
+    st.markdown("""
+    <div class="login-container">
+        <div class="login-title">AskEver AI</div>
+        <div class="login-subtitle">Your intelligent data assistant</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        with st.form("username_form"):
-            username = st.text_input(
-                "Username:",
-                placeholder="Enter your username",
-                max_chars=50,
-                help="This will be used to track your queries and feedback"
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        username = st.text_input(
+            "Enter your name:",
+            placeholder="Your name",
+            max_chars=50,
+            label_visibility="collapsed"
+        )
+        if st.button("Get Started", type="primary", use_container_width=True):
+            if username and username.strip():
+                st.session_state['username'] = username.strip()
+                st.session_state['chat_history'] = []
+                st.rerun()
+            else:
+                st.error("Please enter your name")
+
+
+def show_feedback(query_id, username, user_db):
+    """Display feedback form"""
+    st.markdown('<div class="feedback-section">', unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Rate this response:</p>', unsafe_allow_html=True)
+
+    feedback_key = f"feedback_submitted_{query_id}"
+
+    if not st.session_state.get(feedback_key, False):
+        with st.form(f"feedback_form_{query_id}"):
+            rating = st.radio(
+                "Rating:",
+                options=[1, 2, 3, 4, 5],
+                format_func=lambda x: "⭐" * x,
+                horizontal=True,
+                label_visibility="collapsed"
             )
-            submit = st.form_submit_button("Continue", type="primary")
+
+            feedback_text = st.text_area(
+                "Comments (optional):",
+                placeholder="Tell us what worked well or what could be improved...",
+                height=80,
+                label_visibility="collapsed"
+            )
+
+            submit = st.form_submit_button("Submit Feedback", type="primary")
 
             if submit:
-                if username and username.strip():
-                    st.session_state['username'] = username.strip()
+                try:
+                    user_db.save_feedback(
+                        query_id=query_id,
+                        username=username,
+                        rating=rating,
+                        feedback_text=feedback_text.strip() if feedback_text.strip() else None
+                    )
+                    st.session_state[feedback_key] = True
+                    st.success(f"Thank you for your feedback! (Rating: {'⭐' * rating})")
                     st.rerun()
-                else:
-                    st.error("Please enter a valid username")
+                except Exception as e:
+                    st.error(f"Error saving feedback: {str(e)}")
+                    logger.error(f"Feedback error: {e}")
+    else:
+        st.success("Feedback submitted")
 
-        st.stop()
-
-    return st.session_state['username']
-
-
-def display_header():
-    """Display application header"""
-    st.markdown('<div class="main-header">🤖 RAG-Enhanced NLQ System</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="sub-header">AI-Powered Natural Language Queries with Semantic Search</div>',
-        unsafe_allow_html=True
-    )
-
-    # Display current user
-    if 'username' in st.session_state and st.session_state['username']:
-        _, col2, col3 = st.columns([4, 1, 1])
-        with col2:
-            st.info(f"👤 User: {st.session_state['username']}")
-        with col3:
-            if st.button("🚪 Logout"):
-                st.session_state.clear()
-                st.rerun()
-
-
-def display_rag_context(rag_context):
-    """
-    Display RAG context in sidebar
-    """
-    with st.sidebar:
-        st.subheader("🔍 Semantic Search Context")
-        
-        if rag_context.get('relevant_tables'):
-            with st.expander("📊 Relevant Tables", expanded=True):
-                for table in rag_context['relevant_tables']:
-                    st.markdown(f"- `{table}`")
-        
-        if rag_context.get('metadata_results'):
-            with st.expander("📋 Top Metadata Matches"):
-                for i, result in enumerate(rag_context['metadata_results'][:5], 1):
-                    st.markdown(f"**{i}. {result['table_name']}.{result['column_name']}**")
-                    st.caption(f"Score: {result['score']:.3f}")
-                    if result.get('description'):
-                        st.caption(f"_{result['description'][:100]}..._")
-                    st.markdown("---")
-        
-        if rag_context.get('relationships'):
-            with st.expander("🔗 Relevant Relationships"):
-                for rel in rag_context['relationships'][:5]:
-                    st.markdown(f"**{rel['from']} → {rel['to']}**")
-                    st.caption(f"Join: `{rel['join_condition']}`")
-                    # Handle different score field names
-                    if 'score' in rel:
-                        st.caption(f"Score: {rel['score']:.3f}")
-                    elif 'hybrid_score' in rel:
-                        st.caption(f"Score: {rel['hybrid_score']:.3f}")
-                    else:
-                        st.caption("Score: N/A")
-                    st.markdown("---")
-
-
-def display_thought_process(thought_log):
-    st.subheader("🧠 Agent Reasoning Process")
-    
-    for i, entry in enumerate(thought_log, 1):
-        entry_type = entry['type']
-        content = entry['content']
-        
-        if entry_type == 'thought':
-            with st.expander(f"💭 Thought {i}", expanded=False):
-                st.info(content)
-        elif entry_type == 'action':
-            with st.expander(f"⚡ Action {i}", expanded=False):
-                st.code(content, language='python')
-        elif entry_type == 'observation':
-            with st.expander(f"👁️ Observation {i}", expanded=False):
-                st.success(content)
-
-
-def create_visualization(df, query):
-    if df is None or df.empty:
-        return None
-
-    try:
-        # Determine visualization type
-        numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
-        categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-
-        if len(numeric_cols) >= 1 and len(categorical_cols) >= 1:
-            # Bar chart
-            fig = px.bar(
-                df.head(20),
-                x=categorical_cols[0],
-                y=numeric_cols[0],
-                title=f"{numeric_cols[0]} by {categorical_cols[0]}",
-                color=numeric_cols[0],
-                color_continuous_scale='Blues'
-            )
-            fig.update_layout(xaxis_tickangle=-45)
-            return fig
-
-        elif len(numeric_cols) >= 2:
-            # Scatter plot
-            fig = px.scatter(
-                df.head(100),
-                x=numeric_cols[0],
-                y=numeric_cols[1],
-                title=f"{numeric_cols[0]} vs {numeric_cols[1]}",
-                color=numeric_cols[1] if len(numeric_cols) > 1 else None
-            )
-            return fig
-
-        elif len(numeric_cols) == 1 and len(categorical_cols) >= 1:
-            # Pie chart for aggregated data
-            if len(df) <= 20:
-                fig = px.pie(
-                    df,
-                    names=categorical_cols[0],
-                    values=numeric_cols[0],
-                    title=f"Distribution of {numeric_cols[0]}"
-                )
-                return fig
-
-    except Exception as e:
-        logger.error(f"Error creating visualization: {e}")
-
-    return None
-
-
-def display_feedback_form(user_db, query_id, username):
-    """Display rating and feedback form after results"""
-    st.markdown("---")
-    st.subheader("📝 Rate This Query")
-
-    with st.form(f"feedback_form_{query_id}"):
-        st.write("How would you rate the quality of this query result?")
-
-        # Rating using star emojis
-        rating = st.radio(
-            "Rating:",
-            options=[1, 2, 3, 4, 5],
-            format_func=lambda x: "⭐" * x,
-            horizontal=True,
-            help="1 = Poor, 5 = Excellent"
-        )
-
-        # Feedback text
-        feedback_text = st.text_area(
-            "Additional Feedback (Optional):",
-            placeholder="Tell us what worked well or what could be improved...",
-            height=100
-        )
-
-        # Submit button
-        submit_feedback = st.form_submit_button("Submit Feedback", type="primary")
-
-        if submit_feedback:
-            try:
-                # Save feedback to database
-                feedback_id = user_db.save_feedback(
-                    query_id=query_id,
-                    username=username,
-                    rating=rating,
-                    feedback_text=feedback_text if feedback_text.strip() else None
-                )
-
-                st.success(f"✅ Thank you for your feedback! (Rating: {'⭐' * rating})")
-
-                # Mark feedback as submitted in session state
-                st.session_state[f'feedback_submitted_{query_id}'] = True
-
-            except Exception as e:
-                st.error(f"❌ Error saving feedback: {str(e)}")
-                logger.error(f"Feedback save error: {e}")
-
-    # Show if feedback already submitted
-    if st.session_state.get(f'feedback_submitted_{query_id}', False):
-        st.info("✅ Feedback already submitted for this query")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 def main():
-    # Get username first (will show login screen if not set)
-    username = get_username()
-
-    display_header()
-
-    # Initialize system
-    with st.spinner("🔄 Initializing RAG-Enhanced NLQ System..."):
-        system = initialize_system()
-
-    if system['status'] == 'error':
-        st.error(f"❌ System initialization failed: {system['error']}")
+    # Check for username
+    if 'username' not in st.session_state or not st.session_state.get('username'):
+        show_login()
         st.stop()
 
-    st.success("✅ System initialized successfully!")
+    username = st.session_state['username']
 
-    # Get user database
+    # Initialize session state
+    if 'chat_history' not in st.session_state:
+        st.session_state['chat_history'] = []
+
+    if 'last_processed_query' not in st.session_state:
+        st.session_state['last_processed_query'] = ''
+
+    # Top bar with username
+    col1, col2, col3 = st.columns([1, 5, 1])
+
+    with col3:
+        st.markdown(f'<div class="user-badge">{username}</div>', unsafe_allow_html=True)
+
+    # Header
+    st.markdown("""
+    <div class="app-header">
+        <div class="app-title">AskEver AI</div>
+        <div class="app-subtitle">Ask questions about your data in natural language</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Initialize system
+    if 'system' not in st.session_state:
+        with st.spinner("Initializing..."):
+            system = initialize_system()
+            if system['status'] == 'error':
+                st.error(f"Error: {system['error']}")
+                st.stop()
+            st.session_state['system'] = system
+
+    system = st.session_state['system']
     user_db = system['user_db']
-    
-    # Sidebar configuration
+
+    # Sidebar with recent queries
     with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        show_rag_context = st.checkbox("Show RAG Context", value=True)
-        show_thought_process = st.checkbox("Show Reasoning Process", value=True)
-        auto_visualize = st.checkbox("Auto-generate Visualizations", value=True)
-        
-        st.markdown("---")
-        
-        st.subheader("📊 System Info")
-        st.metric("Model", Config.OPENAI_MODEL.split('/')[-1][:30])
-        st.metric("Database", Config.DB_CONFIG['database'])
-        st.metric("Max Iterations", Config.MAX_AGENT_ITERATIONS)
-        
-        st.markdown("---")
-
-        # User Statistics
-        st.subheader("📈 Your Statistics")
+        st.markdown('<p class="sidebar-heading">Recent Queries</p>', unsafe_allow_html=True)
         try:
-            user_history = user_db.get_user_history(username, limit=5)
-            st.metric("Total Queries", len(user_db.get_user_history(username, limit=1000)))
-
-            if user_history:
-                with st.expander("📜 Recent Queries", expanded=False):
-                    for i, hist in enumerate(user_history[:5], 1):
-                        st.markdown(f"**{i}. {hist['question'][:50]}...**")
-                        st.caption(f"Date: {hist['created_at']}")
-                        if hist['rating']:
-                            st.caption(f"Rating: {'⭐' * hist['rating']}")
-                        st.markdown("---")
+            history = user_db.get_user_history(username, limit=10)
+            if history:
+                for h in history:
+                    with st.expander(f"{h['question'][:50]}...", expanded=False):
+                        st.markdown(f"**Date:** {h['created_at']}")
+                        if h.get('rating'):
+                            st.markdown(f"**Rating:** {'⭐' * h['rating']}")
+                        if h.get('generated_sql'):
+                            st.code(h['generated_sql'], language='sql')
+            else:
+                st.info("No recent queries yet")
         except Exception as e:
-            logger.error(f"Error loading user statistics: {e}")
+            logger.error(f"Error loading history: {e}")
+            st.info("Unable to load recent queries")
 
-        st.markdown("---")
+    # Display chat history (only once per query)
+    for idx, msg in enumerate(st.session_state['chat_history']):
+        # User query
+        st.markdown(f'<div class="message-bubble user-query">{msg["query"]}</div>', unsafe_allow_html=True)
 
-        st.subheader("💡 Example Queries")
-        example_queries = [
-            "Show me total sales by client category",
-            "What are the top 10 selling products by revenue?",
-            "List all transactions with their customer names",
-            "Which sales representatives have the highest revenue?",
-            "Show me sales trends by month for last year",
-            "What is the average transaction amount by vertical market?",
-            "Find all projects with their associated clients",
-            "Show product categories with most sales volume"
-        ]
+        # SQL query (only if it exists and is not empty)
+        if msg.get('sql') and msg['sql'].strip():
+            st.markdown('<p class="section-header">Generated SQL (PostgreSQL):</p>', unsafe_allow_html=True)
+            formatted_sql = format_sql_for_display(msg['sql'])
+            st.code(formatted_sql, language='postgresql')
 
-        for example in example_queries:
-            if st.button(example, key=f"ex_{hash(example)}"):
-                st.session_state['query_input'] = example
-    
-    # Main query interface
-    st.header("📝 Natural Language Query")
-    
-    # Query input
-    query = st.text_area(
-        "Enter your question:",
-        value=st.session_state.get('query_input', ''),
-        height=100,
-        placeholder="e.g., Show me total sales by customer category..."
+        # Results (only if data exists)
+        if msg.get('data') is not None and not msg['data'].empty:
+            st.markdown('<p class="section-header">Results:</p>', unsafe_allow_html=True)
+            df = msg['data']
+
+            # Stats
+            st.markdown(
+                f'<span class="stats-badge">{len(df):,} rows</span>'
+                f'<span class="stats-badge">{len(df.columns)} columns</span>',
+                unsafe_allow_html=True
+            )
+
+            # Data table
+            if len(df) > 100:
+                st.info(f"Showing first 100 of {len(df):,} rows")
+                st.dataframe(df.head(100), use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+            # Download button
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                key=f"download_{idx}"
+            )
+
+            # Feedback form (only for the latest message with results)
+            if idx == len(st.session_state['chat_history']) - 1 and msg.get('query_id'):
+                show_feedback(msg['query_id'], username, user_db)
+
+        # Error
+        if msg.get('error'):
+            st.error(f"Error: {msg['error']}")
+
+        # Divider
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+    # Empty state
+    if not st.session_state['chat_history']:
+        st.markdown("""
+        <div style='text-align: center; padding: 3rem 0; color: #64748b;'>
+            <p style='font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; color: #0f172a;'>Welcome! Start by asking a question</p>
+            <p style='font-size: 1rem;'>Try: "Show me total sales by category" or "What are the top 10 products?"</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Input area
+    st.markdown("---")
+
+    query = st.text_input(
+        "Your question:",
+        placeholder="Type your question here...",
+        key="user_input",
+        label_visibility="collapsed"
     )
-    
-    col1, col2, col3 = st.columns([1, 1, 4])
-    
+
+    col1, col2 = st.columns([3, 1])
+
     with col1:
-        execute_button = st.button("🚀 Execute Query", type="primary")
-    
+        send = st.button("Ask", type="primary")
+
     with col2:
-        clear_button = st.button("🗑️ Clear")
-    
-    if clear_button:
-        st.session_state['query_input'] = ''
-        st.rerun()
-    
-    # Execute query - Generate SQL and Auto-Execute
-    if execute_button and query:
-        with st.spinner("🔄 Processing your query and executing SQL..."):
-            try:
-                # Process query with RAG-enhanced agent
-                result = system['agent'].process_query(query)
-
-                # Store result in session state
-                if result.get('success') and result.get('sql'):
-                    st.session_state['query_result'] = result
-                    st.session_state['edited_sql'] = result['sql']
-                    st.session_state['last_query'] = query
-
-                    # AUTO-EXECUTE: Execute queries immediately
-                    try:
-                        # Check if we have multiple queries
-                        has_multiple = result.get('multiple_queries', False) and len(result.get('all_sql_queries', [])) > 1
-
-                        if has_multiple:
-                            # Execute multiple queries
-                            all_queries = result.get('all_sql_queries', [])
-                            all_exec_results = []
-                            total_time = 0
-
-                            for idx, sql_query in enumerate(all_queries, 1):
-                                logger.info(f"Auto-executing query {idx}/{len(all_queries)}")
-                                exec_result = system['db_tools'].sql_db_query(sql_query)
-                                exec_result['query_number'] = idx
-                                exec_result['sql'] = sql_query
-                                total_time += exec_result.get('execution_time', 0)
-                                all_exec_results.append(exec_result)
-
-                            # Store multiple results
-                            st.session_state['sql_executed'] = True
-                            st.session_state['multiple_execution'] = True
-                            st.session_state['execution_results'] = all_exec_results
-                            st.session_state['total_execution_time'] = total_time
-                            st.session_state['all_sql_queries'] = all_queries
-
-                            # Save first successful query to database
-                            for exec_result in all_exec_results:
-                                if exec_result.get('success'):
-                                    try:
-                                        query_id = user_db.save_query(
-                                            username=username,
-                                            question=query,
-                                            generated_sql=result.get('sql', ''),
-                                            executed_sql=exec_result['sql'],
-                                            results=pd.DataFrame(exec_result.get('data', [])) if exec_result.get('data') else None,
-                                            result_count=exec_result.get('row_count', 0),
-                                            iterations=result.get('iterations', 0),
-                                            tables_used=result.get('relevant_tables', [])
-                                        )
-                                        st.session_state['current_query_id'] = query_id
-                                        break
-                                    except Exception as db_error:
-                                        logger.error(f"Error saving query to database: {db_error}")
-                        else:
-                            # Execute single query
-                            exec_result = system['db_tools'].sql_db_query(result['sql'])
-
-                            # Store execution result
-                            st.session_state['sql_executed'] = True
-                            st.session_state['multiple_execution'] = False
-                            st.session_state['execution_result'] = exec_result
-
-                            # Save query to database
-                            if exec_result.get('success'):
-                                try:
-                                    query_id = user_db.save_query(
-                                        username=username,
-                                        question=query,
-                                        generated_sql=result.get('sql', ''),
-                                        executed_sql=result['sql'],
-                                        results=pd.DataFrame(exec_result.get('data', [])) if exec_result.get('data') else None,
-                                        result_count=exec_result.get('row_count', 0),
-                                        iterations=result.get('iterations', 0),
-                                        tables_used=result.get('relevant_tables', [])
-                                    )
-                                    st.session_state['current_query_id'] = query_id
-                                except Exception as db_error:
-                                    logger.error(f"Error saving query to database: {db_error}")
-
-                    except Exception as exec_error:
-                        st.error(f"❌ Error executing generated SQL: {str(exec_error)}")
-                        st.session_state['sql_executed'] = False
-                        st.session_state['execution_result'] = None
-
-                elif result.get('success'):
-                    st.warning("⚠️ Query processed but no SQL was generated")
-                else:
-                    st.error(f"❌ Query failed: {result.get('error', 'Unknown error')}")
-
-            except Exception as e:
-                st.error(f"❌ Error processing query: {str(e)}")
-                logger.error(f"Query processing error: {e}", exc_info=True)
-
-    # Display results and SQL editor if we have a generated query
-    if 'query_result' in st.session_state and st.session_state.get('query_result'):
-        result = st.session_state['query_result']
-
-        st.markdown('<div class="success-box">✅ SQL Generated & Executed!</div>', unsafe_allow_html=True)
-
-        # Display execution results FIRST (if available)
-        if st.session_state.get('sql_executed'):
-            st.markdown("---")
-
-            # Check if multiple queries were executed
-            if st.session_state.get('multiple_execution'):
-                # Display multiple query results
-                all_exec_results = st.session_state.get('execution_results', [])
-                total_time = st.session_state.get('total_execution_time', 0)
-
-                st.success(f"✅ All queries executed! Total time: {total_time:.2f}s")
-                st.subheader(f"📊 Results from {len(all_exec_results)} Queries")
-
-                # Display each query result in a separate section
-                for exec_result in all_exec_results:
-                    query_num = exec_result.get('query_number', 1)
-                    with st.expander(f"📋 Query {query_num} Results", expanded=True):
-                        # Show SQL
-                        st.code(exec_result.get('sql', ''), language='sql')
-
-                        if exec_result.get('success'):
-                            st.success(f"✅ Executed in {exec_result.get('execution_time', 0):.2f}s")
-
-                            if exec_result.get('data'):
-                                df = pd.DataFrame(exec_result['data'])
-                                total_rows = exec_result['row_count']
-                                st.info(f"📈 Returned {total_rows:,} row(s)")
-
-                                # Add pagination for large datasets
-                                if total_rows > 1000:
-                                    st.warning(f"⚠️ Large dataset ({total_rows:,} rows). Showing paginated results.")
-
-                                    # Use timestamp to ensure unique keys between auto-exec and re-exec
-                                    import time
-                                    unique_id = int(time.time() * 1000) % 10000
-
-                                    rows_per_page = st.selectbox(
-                                        "Rows per page:",
-                                        options=[100, 500, 1000, 5000],
-                                        index=1,
-                                        key=f'rows_per_page_{query_num}_{unique_id}'
-                                    )
-
-                                    total_pages = (total_rows - 1) // rows_per_page + 1
-                                    page = st.number_input(
-                                        f"Page (1-{total_pages}):",
-                                        min_value=1,
-                                        max_value=total_pages,
-                                        value=1,
-                                        key=f'page_{query_num}_{unique_id}'
-                                    )
-
-                                    start_idx = (page - 1) * rows_per_page
-                                    end_idx = min(start_idx + rows_per_page, total_rows)
-
-                                    st.dataframe(
-                                        df.iloc[start_idx:end_idx],
-                                        use_container_width=True
-                                    )
-                                    st.caption(f"Showing rows {start_idx + 1:,} to {end_idx:,} of {total_rows:,}")
-
-                                    csv = df.to_csv(index=False)
-                                    st.download_button(
-                                        label=f"📥 Download Query {query_num} (CSV)",
-                                        data=csv,
-                                        file_name=f"query_{query_num}_results.csv",
-                                        mime="text/csv",
-                                        key=f'download_{query_num}_{unique_id}'
-                                    )
-                                else:
-                                    st.dataframe(df, use_container_width=True)
-
-                                    csv = df.to_csv(index=False)
-                                    import time
-                                    unique_id = int(time.time() * 1000) % 10000
-                                    st.download_button(
-                                        label=f"📥 Download Query {query_num} (CSV)",
-                                        data=csv,
-                                        file_name=f"query_{query_num}_results.csv",
-                                        mime="text/csv",
-                                        key=f'download_else_{query_num}_{unique_id}'
-                                    )
-
-                                # Auto-visualization
-                                if auto_visualize and len(df) > 0:
-                                    fig = create_visualization(df, f"Query {query_num}")
-                                    if fig:
-                                        st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.info("Query executed successfully but returned no rows")
-                        else:
-                            st.error(f"❌ Query failed: {exec_result.get('error', 'Unknown error')}")
-
-            elif st.session_state.get('execution_result'):
-                # Single query result
-                exec_result = st.session_state['execution_result']
-
-                if exec_result.get('success'):
-                    st.success(f"✅ Query executed successfully in {exec_result.get('execution_time', 0)}s!")
-
-                    # Display results
-                    st.subheader("📊 Query Results")
-
-                    if exec_result.get('data'):
-                        df = pd.DataFrame(exec_result['data'])
-
-                        # Display row count
-                        total_rows = exec_result['row_count']
-                        st.info(f"📈 Returned {total_rows} row(s)")
-
-                        # Add pagination for large datasets
-                        if total_rows > 1000:
-                            st.warning(f"⚠️ Large dataset detected ({total_rows:,} rows). Showing paginated results for better performance.")
-
-                            # Pagination controls
-                            rows_per_page = st.selectbox(
-                                "Rows per page:",
-                                options=[100, 500, 1000, 5000],
-                                index=1
-                            )
-
-                            total_pages = (total_rows - 1) // rows_per_page + 1
-                            page = st.number_input(
-                                f"Page (1-{total_pages}):",
-                                min_value=1,
-                                max_value=total_pages,
-                                value=1
-                            )
-
-                            # Calculate slice
-                            start_idx = (page - 1) * rows_per_page
-                            end_idx = min(start_idx + rows_per_page, total_rows)
-
-                            # Display paginated data
-                            st.dataframe(
-                                df.iloc[start_idx:end_idx],
-                                use_container_width=True
-                            )
-                            st.caption(f"Showing rows {start_idx + 1:,} to {end_idx:,} of {total_rows:,}")
-
-                            # Download full dataset option
-                            csv = df.to_csv(index=False)
-                            st.download_button(
-                                label="📥 Download Full Dataset (CSV)",
-                                data=csv,
-                                file_name="query_results.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            # Display full dataset for smaller results
-                            st.dataframe(df, use_container_width=True)
-
-                        # Auto-visualization
-                        if auto_visualize and len(df) > 0:
-                            fig = create_visualization(df, st.session_state.get('last_query', ''))
-                            if fig:
-                                st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.info("Query executed successfully but returned no rows")
-                else:
-                    st.error(f"❌ Query execution failed: {exec_result.get('error', 'Unknown error')}")
-
-            st.markdown("---")
-
-        # Display RAG context
-        if show_rag_context and result.get('rag_context'):
-            display_rag_context(result['rag_context'])
-
-        # Display thought process
-        if show_thought_process and result.get('thought_process'):
-            display_thought_process(result['thought_process'])
-
-        # SQL EDIT & RE-EXECUTE SECTION
-        st.subheader("✏️ Edit & Re-execute SQL")
-
-        # Check if there are multiple queries
-        has_multiple_queries = result.get('multiple_queries', False)
-        all_sql_queries = result.get('all_sql_queries', [result.get('sql')])
-
-        if has_multiple_queries and len(all_sql_queries) > 1:
-            st.info(f"💡 {len(all_sql_queries)} queries were generated and executed. You can edit and re-execute them below.")
-
-            # Display all queries in expandable sections
-            for idx, sql_query in enumerate(all_sql_queries, 1):
-                with st.expander(f"📋 Query {idx} of {len(all_sql_queries)}", expanded=(idx == 1)):
-                    st.code(sql_query, language='sql')
-        else:
-            st.info("💡 The generated SQL was executed. You can edit and re-execute it below if needed.")
-
-        # Editable SQL text area
-        edited_sql = st.text_area(
-            "Edit SQL Query:" if not has_multiple_queries else f"Edit Combined SQL ({len(all_sql_queries)} queries):",
-            value=st.session_state.get('edited_sql', result['sql']),
-            height=200,
-            key='sql_editor',
-            help="Edit the SQL query if something is missing, then click Re-execute"
-        )
-
-        # Update session state
-        st.session_state['edited_sql'] = edited_sql
-        st.session_state['all_sql_queries'] = all_sql_queries
-
-        # Buttons for SQL execution
-        col1, col2, col3 = st.columns([1, 1, 3])
-
-        with col1:
-            execute_sql_button = st.button("🔄 Re-execute SQL", type="primary", key='execute_sql')
-
-        with col2:
-            reset_sql_button = st.button("↩️ Reset to Original", key='reset_sql')
-
-        with col3:
-            clear_all_button = st.button("🗑️ Clear All", key='clear_all')
-
-        if reset_sql_button:
-            st.session_state['edited_sql'] = result['sql']
+        if st.button("Clear"):
+            st.session_state['chat_history'] = []
+            st.session_state['last_processed_query'] = ''
             st.rerun()
 
-        if clear_all_button:
-            # Clear all session state
-            for key in ['query_result', 'edited_sql', 'last_query', 'sql_executed', 'execution_result']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
+    # Process query (only once)
+    if send and query:
+        # Check if this exact query was just processed
+        last_query = st.session_state.get('last_processed_query', '')
 
-        # Execute the edited SQL
-        if execute_sql_button:
-            with st.spinner("⚙️ Executing SQL..."):
+        if last_query != query:
+            st.session_state['last_processed_query'] = query
+
+            with st.spinner("Thinking..."):
                 try:
-                    # Check if we have multiple queries to execute
-                    has_multiple = st.session_state.get('all_sql_queries') and len(st.session_state.get('all_sql_queries', [])) > 1
+                    # Generate SQL
+                    result = system['agent'].process_query(query)
 
-                    if has_multiple:
-                        # Execute multiple queries
-                        all_queries = st.session_state.get('all_sql_queries', [])
-                        all_exec_results = []
-                        total_time = 0
+                    if result.get('success') and result.get('sql'):
+                        # Execute SQL
+                        exec_result = system['db_tools'].sql_db_query(result['sql'])
 
-                        for idx, sql_query in enumerate(all_queries, 1):
-                            logger.info(f"Executing query {idx}/{len(all_queries)}")
-                            exec_result = system['db_tools'].sql_db_query(sql_query)
-                            exec_result['query_number'] = idx
-                            exec_result['sql'] = sql_query
-                            total_time += exec_result.get('execution_time', 0)
-                            all_exec_results.append(exec_result)
-
-                        # Store multiple results
-                        st.session_state['sql_executed'] = True
-                        st.session_state['multiple_execution'] = True
-                        st.session_state['execution_results'] = all_exec_results
-                        st.session_state['total_execution_time'] = total_time
-
-                        # Save first successful query to database
-                        for exec_result in all_exec_results:
-                            if exec_result.get('success'):
-                                try:
-                                    query_id = user_db.save_query(
-                                        username=username,
-                                        question=st.session_state.get('last_query', ''),
-                                        generated_sql=result.get('sql', ''),
-                                        executed_sql=exec_result['sql'],
-                                        results=pd.DataFrame(exec_result.get('data', [])) if exec_result.get('data') else None,
-                                        result_count=exec_result.get('row_count', 0),
-                                        iterations=result.get('iterations', 0),
-                                        tables_used=result.get('relevant_tables', [])
-                                    )
-                                    st.session_state['current_query_id'] = query_id
-                                    break
-                                except Exception as db_error:
-                                    logger.error(f"Error saving query to database: {db_error}")
-                    else:
-                        # Execute single query (original behavior)
-                        exec_result = system['db_tools'].sql_db_query(edited_sql)
-
-                        # Store execution result in session state
-                        st.session_state['sql_executed'] = True
-                        st.session_state['multiple_execution'] = False
-                        st.session_state['execution_result'] = exec_result
-
-                        # Save query to database
                         if exec_result.get('success'):
+                            df = pd.DataFrame(exec_result['data']) if exec_result.get('data') else pd.DataFrame()
+
+                            # Save to database
+                            query_id = None
                             try:
                                 query_id = user_db.save_query(
                                     username=username,
-                                    question=st.session_state.get('last_query', ''),
-                                    generated_sql=result.get('sql', ''),
-                                    executed_sql=edited_sql,
-                                    results=pd.DataFrame(exec_result.get('data', [])) if exec_result.get('data') else None,
-                                    result_count=exec_result.get('row_count', 0),
+                                    question=query,
+                                    generated_sql=result['sql'],
+                                    executed_sql=result['sql'],
+                                    results=df if not df.empty else None,
+                                    result_count=len(df),
                                     iterations=result.get('iterations', 0),
                                     tables_used=result.get('relevant_tables', [])
                                 )
-                                st.session_state['current_query_id'] = query_id
-                            except Exception as db_error:
-                                logger.error(f"Error saving query to database: {db_error}")
+                            except Exception as e:
+                                logger.error(f"Error saving query: {e}")
 
-                except Exception as exec_error:
-                    st.session_state['sql_executed'] = True
-                    st.session_state['multiple_execution'] = False
-                    st.session_state['execution_result'] = {
-                        'success': False,
-                        'error': str(exec_error)
-                    }
-
-        # Display execution results if available
-        if st.session_state.get('sql_executed'):
-            # Check if multiple queries were executed
-            if st.session_state.get('multiple_execution'):
-                # Display multiple query results
-                all_exec_results = st.session_state.get('execution_results', [])
-                total_time = st.session_state.get('total_execution_time', 0)
-
-                st.success(f"✅ All queries executed! Total time: {total_time:.2f}s")
-                st.subheader(f"📊 Results from {len(all_exec_results)} Queries")
-
-                # Display each query result in a separate section
-                for exec_result in all_exec_results:
-                    query_num = exec_result.get('query_number', 1)
-                    with st.expander(f"📋 Query {query_num} Results", expanded=True):
-                        # Show SQL
-                        st.code(exec_result.get('sql', ''), language='sql')
-
-                        if exec_result.get('success'):
-                            st.success(f"✅ Executed in {exec_result.get('execution_time', 0):.2f}s")
-
-                            if exec_result.get('data'):
-                                df = pd.DataFrame(exec_result['data'])
-                                total_rows = exec_result['row_count']
-                                st.info(f"📈 Returned {total_rows:,} row(s)")
-
-                                # Add pagination for large datasets
-                                if total_rows > 1000:
-                                    st.warning(f"⚠️ Large dataset ({total_rows:,} rows). Showing paginated results.")
-
-                                    # Use timestamp to ensure unique keys between auto-exec and re-exec
-                                    import time
-                                    unique_id = int(time.time() * 1000) % 10000
-
-                                    rows_per_page = st.selectbox(
-                                        "Rows per page:",
-                                        options=[100, 500, 1000, 5000],
-                                        index=1,
-                                        key=f'rows_per_page_{query_num}_{unique_id}'
-                                    )
-
-                                    total_pages = (total_rows - 1) // rows_per_page + 1
-                                    page = st.number_input(
-                                        f"Page (1-{total_pages}):",
-                                        min_value=1,
-                                        max_value=total_pages,
-                                        value=1,
-                                        key=f'page_{query_num}_{unique_id}'
-                                    )
-
-                                    start_idx = (page - 1) * rows_per_page
-                                    end_idx = min(start_idx + rows_per_page, total_rows)
-
-                                    st.dataframe(
-                                        df.iloc[start_idx:end_idx],
-                                        use_container_width=True
-                                    )
-                                    st.caption(f"Showing rows {start_idx + 1:,} to {end_idx:,} of {total_rows:,}")
-
-                                    csv = df.to_csv(index=False)
-                                    st.download_button(
-                                        label=f"📥 Download Query {query_num} (CSV)",
-                                        data=csv,
-                                        file_name=f"query_{query_num}_results.csv",
-                                        mime="text/csv",
-                                        key=f'download_{query_num}_{unique_id}'
-                                    )
-                                else:
-                                    st.dataframe(df, use_container_width=True)
-
-                                    csv = df.to_csv(index=False)
-                                    import time
-                                    unique_id = int(time.time() * 1000) % 10000
-                                    st.download_button(
-                                        label=f"📥 Download Query {query_num} (CSV)",
-                                        data=csv,
-                                        file_name=f"query_{query_num}_results.csv",
-                                        mime="text/csv",
-                                        key=f'download_else_{query_num}_{unique_id}'
-                                    )
-
-                                # Auto-visualization
-                                if auto_visualize and len(df) > 0:
-                                    fig = create_visualization(df, f"Query {query_num}")
-                                    if fig:
-                                        st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.info("Query executed successfully but returned no rows")
+                            # Add to history (only once)
+                            st.session_state['chat_history'].append({
+                                'query': query,
+                                'sql': result['sql'],
+                                'data': df,
+                                'query_id': query_id
+                            })
                         else:
-                            st.error(f"❌ Query failed: {exec_result.get('error', 'Unknown error')}")
+                            st.session_state['chat_history'].append({
+                                'query': query,
+                                'sql': result.get('sql'),
+                                'error': exec_result.get('error', 'Query execution failed')
+                            })
+                    else:
+                        st.session_state['chat_history'].append({
+                            'query': query,
+                            'error': result.get('error', 'Could not generate SQL')
+                        })
 
-            elif st.session_state.get('execution_result'):
-                # Single query result (re-execution or original)
-                exec_result = st.session_state['execution_result']
-
-                if exec_result.get('success'):
-                    st.success(f"✅ Query executed successfully in {exec_result.get('execution_time', 0)}s!")
-
-                    # Display results
-                    st.subheader("📊 Query Results")
-
-                    if exec_result.get('data'):
-                        df = pd.DataFrame(exec_result['data'])
-
-                        # Display row count
-                        total_rows = exec_result['row_count']
-                        st.info(f"📈 Returned {total_rows} row(s)")
-
-                        # Add pagination for large datasets
-                        if total_rows > 1000:
-                            st.warning(f"⚠️ Large dataset detected ({total_rows:,} rows). Showing paginated results for better performance.")
-
-                            # Pagination controls with unique keys for re-execution
-                            rows_per_page = st.selectbox(
-                                "Rows per page:",
-                                options=[100, 500, 1000, 5000],
-                                index=1,
-                                key='reexec_rows_per_page_single'
-                            )
-
-                            total_pages = (total_rows - 1) // rows_per_page + 1
-                            page = st.number_input(
-                                f"Page (1-{total_pages}):",
-                                min_value=1,
-                                max_value=total_pages,
-                                value=1,
-                                key='reexec_page_single'
-                            )
-
-                            # Calculate slice
-                            start_idx = (page - 1) * rows_per_page
-                            end_idx = min(start_idx + rows_per_page, total_rows)
-
-                            # Display paginated data
-                            st.dataframe(
-                                df.iloc[start_idx:end_idx],
-                                use_container_width=True
-                            )
-                            st.caption(f"Showing rows {start_idx + 1:,} to {end_idx:,} of {total_rows:,}")
-
-                            # Download full dataset option
-                            csv = df.to_csv(index=False)
-                            st.download_button(
-                                label="📥 Download Full Dataset (CSV)",
-                                data=csv,
-                                file_name="query_results.csv",
-                                mime="text/csv",
-                                key='reexec_download_single'
-                            )
-                        else:
-                            # Display full dataset for smaller results
-                            st.dataframe(df, use_container_width=True)
-
-                        # Auto-visualization
-                        if auto_visualize and len(df) > 0:
-                            fig = create_visualization(df, st.session_state.get('last_query', ''))
-                        if fig:
-                            st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("Query executed successfully but returned no rows")
-
-                # Display metadata
-                with st.expander("ℹ️ Query Metadata"):
-                    st.json({
-                        "iterations": result.get('iterations', 0),
-                        "relevant_tables": result.get('relevant_tables', []),
-                        "execution_time": exec_result.get('execution_time', 'N/A'),
-                        "row_count": exec_result.get('row_count', 0)
+                except Exception as e:
+                    logger.error(f"Error: {e}")
+                    st.session_state['chat_history'].append({
+                        'query': query,
+                        'error': str(e)
                     })
 
-                # Display feedback form if query was saved
-                if 'current_query_id' in st.session_state and st.session_state['current_query_id']:
-                    display_feedback_form(user_db, st.session_state['current_query_id'], username)
-
-            else:
-                st.error(f"❌ SQL Execution failed: {exec_result.get('error', 'Unknown error')}")
-    
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    <div style='text-align: center; color: #666;'>
-        🤖 RAG-Enhanced NLQ System | Powered by Multilingual MPNet Embeddings & ReAct Pattern
-    </div>
-    """, unsafe_allow_html=True)
+            st.rerun()
 
 
 if __name__ == "__main__":

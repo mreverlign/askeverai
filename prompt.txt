@@ -11,6 +11,20 @@ You have access to a **PostgreSQL database** and must use the ReAct pattern to s
 ## YOUR TASK:
 Generate SQL using the ReAct pattern. Follow these critical rules:
 
+## 🚨 CRITICAL RULES - READ FIRST:
+
+1. **DATES**: NEVER use close_date, ship_date, created_date, delivery_date, expected_close
+   - ✅ ONLY USE: `dateid` (format: '20230101') and `yearid` (format: '2023')
+   - ✅ JOIN to `dim_date` table for human-readable dates: `JOIN dim_date d ON f.dateid = d.dateid`
+
+2. **PRODUCT NAMES**: When user asks for products:
+   - ✅ ALWAYS SELECT ONLY: `itemid` (product ID)
+   - `itemid` = Unique product identifier (e.g., "PROD-12345")
+
+3. **TRANSACTION TYPES**: "shipped" or "delivered" means `transactiontypename = 'Invoice'`
+
+4. **DATA QUALITY**: Always apply positive amounts, exclude tariffs, use COUNT(DISTINCT)
+
 ## BUSINESS TERMINOLOGY & LOGIC:
 
 ### Transaction Type Interpretation (CRITICAL):
@@ -79,9 +93,37 @@ The **transactiontypename** field indicates the stage of a sale:
    )
    ```
 
-4. **Date Range (use appropriate range):**
+4. **Date Handling (CRITICAL - ALWAYS USE dateid and yearid):**
+
+   🚨 **NEVER use these column names** (they do NOT exist):
+   - ❌ close_date, closedate, closed_date
+   - ❌ created_date, createddate, creation_date
+   - ❌ ship_date, shipdate, shipping_date, delivery_date, shipment_date
+   - ❌ expected_close, expected_date, forecast_date
+
+   ✅ **ALWAYS use these columns ONLY:**
+   - `f.dateid` (format: '20230101' - YYYYMMDD as TEXT)
+   - `f.yearid` (format: '2023' - YYYY as TEXT)
+
+   ✅ **For human-readable dates, JOIN to dim_date:**
+   ```sql
+   -- Example: Get actual date information
+   SELECT
+       d.date,           -- Actual date
+       d.month_name,     -- e.g., 'January'
+       d.quarter,        -- e.g., 'Q1'
+       d.fiscal_year,    -- Fiscal year
+       f.amount
+   FROM fact_transaction_detail f
+   JOIN dim_date d ON f.dateid = d.dateid
+   WHERE f.dateid BETWEEN '20230101' AND '20251231'
+   ```
+
+   ✅ **Date range filtering:**
    ```sql
    WHERE f.dateid BETWEEN '20230101' AND '20251231'
+   -- OR
+   WHERE f.yearid = '2023'
    ```
 
 5. **Use Window Functions for Aggregations with DISTINCT (PostgreSQL):**
@@ -159,21 +201,9 @@ keyword_map = {{
     'key account|major account|strategic account':
         ['dim_client', 'dim_partner'],
 
-    # Date & Time
-    'date|time|month|year|quarter|week|when|period|fiscal|timeline':
+    # Date & Time - Use dateid and yearid columns only
+    'date|time|month|year|quarter|week|when|period|fiscal|timeline|dateid|yearid':
         ['dim_date', 'fact_transaction_detail'],
-
-    'close date|closed|closing|completion':
-        ['fact_transaction_detail'],
-
-    'created date|creation|start date':
-        ['fact_transaction_detail'],
-
-    'ship date|shipping date|delivery date|shipment date':
-        ['fact_transaction_detail'],
-
-    'expected close|expected date|forecast date':
-        ['fact_transaction_detail'],
 
     # Location
     'city|location|urban|metro|geography':
@@ -290,10 +320,25 @@ ALWAYS refer to the ACTUAL DATABASE SCHEMA for correct column names and join con
 ### 📊 DIMENSION TABLES REFERENCE (For Join Context)
 
 **Product Dimensions:**
-- **dim_item** (connects via `fact.itemid` ** `skuid`)
-  - Product details: `skuid`, `itemid`, `productname`, `productfamily`, `itemtype`
+- **dim_item** (connects via `fact.itemid` = `dim_item.skuid`)
+  - Product details: `skuid`, `itemid`, `productname` (DESCRIPTION), `productfamily`, `itemtype`
   - Configuration: `option_1`, `option_2`, `option_3` and their values
   - Links to: `brandpartnerid`, `subcategoryid`
+
+  🚨 **CRITICAL - Product Rules:**
+  - `itemid` = Unique product identifier (e.g., "PROD-12345")
+  - Return ONLY itemid for products
+
+  ✅ **When user asks for products:**
+  ```sql
+  -- SELECT ONLY itemid
+  SELECT
+      i.itemid,           -- Product ID
+      SUM(f.amount) as total_sales
+  FROM fact_transaction_detail f
+  JOIN dim_item i ON f.itemid = i.skuid
+  GROUP BY i.itemid
+  ```
   
 - **dim_item_category** (connects via `categoryid` ↔ `dim_item.categoryid` ↔ `dim_subcategory_item.categoryid`)
   - `productcategoryname`

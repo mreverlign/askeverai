@@ -61,7 +61,7 @@ class LLMClient:
         temperature: float = 0.0,
         max_tokens: int = 4000,
     ) -> str:
-       
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
