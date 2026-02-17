@@ -1,7 +1,7 @@
 import psycopg2
 from typing import Dict, List, Any, Tuple
 import pandas as pd
-from config import Config
+from src.config.config import Config
 import json
 import re
 from collections import deque
@@ -31,6 +31,7 @@ class SchemaContextManager:
             "sales|revenue|amount|money|dollar|total|sum|value|price|cost|financial": [
                 "fact_transaction_detail"
             ],
+            
             "quantity|volume|units|count|items sold|number of": [
                 "fact_transaction_detail"
             ],
@@ -248,22 +249,49 @@ class SchemaContextManager:
 
 
 class DatabaseTools:
-    def __init__(self, db_config: Dict):
-        self.config = db_config
-        self.conn = None
+    def __init__(self, olap_config: Dict = None, oltp_config: Dict = None):
+        # Support both old single-DB and new dual-DB initialization
+        if olap_config is None and oltp_config is None:
+            # Legacy mode: single DB (backward compatibility)
+            self.olap_config = Config.DB_CONFIG
+            self.oltp_config = None
+            self.dual_mode = False
+        else:
+            # Dual DB mode
+            self.olap_config = olap_config or Config.OLAP_DB_CONFIG
+            self.oltp_config = oltp_config or Config.OLTP_DB_CONFIG
+            self.dual_mode = True
+
+        self.conn = None  # Primary connection (OLAP in dual mode, single DB in legacy mode)
+        self.oltp_conn = None  # OLTP connection (only in dual mode)
         self.query_history = []
         self.metadata_cache = {}
         self.transaction_in_error = False
 
     def connect(self) -> bool:
         try:
-            self.conn = psycopg2.connect(**self.config)
-            self.conn.autocommit = False  # Manage transactions explicitly
+            # Connect to OLAP (or single DB in legacy mode)
+            self.conn = psycopg2.connect(**self.olap_config)
+            self.conn.autocommit = False
             timeout = Config.DB_QUERY_TIMEOUT
             with self.conn.cursor() as cur:
                 cur.execute(f"SET statement_timeout = {timeout * 1000};")
             self.conn.commit()
             self.transaction_in_error = False
+
+            # Connect to OLTP if in dual mode
+            if self.dual_mode and self.oltp_config:
+                try:
+                    self.oltp_conn = psycopg2.connect(**self.oltp_config)
+                    self.oltp_conn.autocommit = False
+                    with self.oltp_conn.cursor() as cur:
+                        cur.execute(f"SET statement_timeout = {timeout * 1000};")
+                    self.oltp_conn.commit()
+                    logger.info("Connected to both OLAP and OLTP databases")
+                except Exception as oltp_error:
+                    logger.warning(f"OLTP connection failed: {oltp_error}. Operating in OLAP-only mode.")
+                    self.oltp_conn = None
+
             return True
         except Exception as e:
             logger.error(f"Database connection failed: {e}")
@@ -354,7 +382,37 @@ class DatabaseTools:
                             for row in cur.fetchall()
                         ]
 
-                        # Skip if table doesn't exist
+                        # If table not found in OLAP, try OLTP fallback
+                        if not columns and self.dual_mode and self.oltp_conn:
+                            try:
+                                with self.oltp_conn.cursor() as oltp_cur:
+                                    oltp_cur.execute(
+                                        f"""
+                                        SELECT column_name, data_type, is_nullable
+                                        FROM information_schema.columns
+                                        WHERE table_schema = 'public' AND table_name = '{table}'
+                                        ORDER BY ordinal_position;
+                                        """
+                                    )
+                                    columns = [
+                                        {
+                                            "name": row[0],
+                                            "type": row[1],
+                                            "nullable": row[2] == "YES",
+                                        }
+                                        for row in oltp_cur.fetchall()
+                                    ]
+                                    if columns:
+                                        logger.info(f"Table {table} found in OLTP (not in OLAP)")
+                                self.oltp_conn.commit()
+                            except Exception as oltp_err:
+                                logger.warning(f"OLTP schema fallback failed for {table}: {oltp_err}")
+                                try:
+                                    self.oltp_conn.rollback()
+                                except Exception:
+                                    pass
+
+                        # Skip if table doesn't exist in either database
                         if not columns:
                             logger.warning(f"Table {table} not found or has no columns")
                             continue
@@ -553,15 +611,26 @@ class DatabaseTools:
             self.conn.rollback()
             return {"success": False, "error": str(e)}
 
-    def sql_db_query(self, query: str) -> Dict[str, Any]:
-        import time
+    def _is_result_sufficient(self, result: Dict[str, Any]) -> bool:
+        """Check if query result is sufficient (has data)"""
+        if not result.get("success"):
+            return False
 
+        # Check if we got any rows
+        row_count = result.get("row_count", 0)
+        if row_count > 0:
+            return True
+
+        # Empty result - insufficient
+        return False
+
+    def _execute_query_on_connection(self, query: str, conn, db_label: str = "") -> Dict[str, Any]:
+        """Execute query on a specific connection"""
+        import time
         start_time = time.time()
 
         try:
-            self.ensure_clean_transaction()
-
-            with self.conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(query)
                 columns = (
                     [desc[0] for desc in cur.description] if cur.description else []
@@ -570,37 +639,133 @@ class DatabaseTools:
 
                 # Convert to list of dicts
                 data = [dict(zip(columns, row)) for row in rows]
-
                 execution_time = time.time() - start_time
+                conn.commit()
 
-                # Store query in history
-                self.query_history.append(
-                    {
-                        "query": query,
-                        "row_count": len(data),
-                        "execution_time": execution_time,
-                    }
-                )
-
-                self.conn.commit()  # Commit successful query
-
+                msg = f"Query executed successfully on {db_label}. Returned {len(data)} row(s) in {execution_time:.3f}s."
                 return {
                     "success": True,
                     "data": data,
                     "row_count": len(data),
                     "columns": columns,
                     "execution_time": round(execution_time, 3),
-                    "message": f"Query executed successfully. Returned {len(data)} row(s) in {execution_time:.3f}s.",
+                    "message": msg,
+                    "db_source": db_label,
                 }
 
         except Exception as e:
             execution_time = time.time() - start_time
-            self.transaction_in_error = True
-            self.conn.rollback()
+            conn.rollback()
             return {
                 "success": False,
                 "error": str(e),
                 "execution_time": round(execution_time, 3),
+                "data": [],
+                "row_count": 0,
+                "columns": [],
+                "db_source": db_label,
+            }
+
+    def sql_db_query(self, query: str, target_db: str = None) -> Dict[str, Any]:
+        """
+        Execute query with intelligent routing
+
+        Args:
+            query: SQL query string
+            target_db: Optional target database ('OLAP' or 'OLTP')
+                      If None, tries OLAP first with fallback
+        """
+        try:
+            self.ensure_clean_transaction()
+
+            # If target_db specified by RAG, try that first
+            if target_db == 'OLTP' and self.dual_mode and self.oltp_conn:
+                logger.info("RAG recommends OLTP - Querying OLTP database...")
+                oltp_result = self._execute_query_on_connection(query, self.oltp_conn, "OLTP")
+
+                self.query_history.append({
+                    "query": query,
+                    "row_count": oltp_result.get("row_count", 0),
+                    "execution_time": oltp_result.get("execution_time", 0),
+                    "db_source": "OLTP",
+                })
+
+                # If OLTP succeeds, return it
+                if oltp_result.get("success") and oltp_result.get("row_count", 0) > 0:
+                    logger.info(f"OLTP returned {oltp_result['row_count']} rows")
+                    oltp_result["rag_recommended"] = True
+                    return oltp_result
+
+                # OLTP failed or empty, try OLAP as fallback
+                logger.info("OLTP returned no results, trying OLAP fallback...")
+                olap_result = self._execute_query_on_connection(query, self.conn, "OLAP")
+
+                self.query_history.append({
+                    "query": query,
+                    "row_count": olap_result.get("row_count", 0),
+                    "execution_time": olap_result.get("execution_time", 0),
+                    "db_source": "OLAP",
+                })
+
+                if olap_result.get("success"):
+                    logger.info(f"OLAP fallback returned {olap_result.get('row_count', 0)} rows")
+                    olap_result["fallback_used"] = True
+                    olap_result["oltp_row_count"] = oltp_result.get("row_count", 0)
+                    return olap_result
+
+                # Both failed, return OLTP error (primary target)
+                return oltp_result
+
+            # Default: Try OLAP first
+            logger.info("🔍 Querying OLAP database...")
+            olap_result = self._execute_query_on_connection(query, self.conn, "OLAP")
+
+            self.query_history.append({
+                "query": query,
+                "row_count": olap_result.get("row_count", 0),
+                "execution_time": olap_result.get("execution_time", 0),
+                "db_source": "OLAP",
+            })
+
+            # Check if OLAP result is sufficient
+            if self._is_result_sufficient(olap_result):
+                logger.info(f"OLAP returned {olap_result['row_count']} rows - sufficient")
+                return olap_result
+
+            # If dual mode enabled and OLTP connection available, try fallback
+            if self.dual_mode and self.oltp_conn and Config.ENABLE_OLTP_FALLBACK:
+                logger.info(f"OLAP returned {olap_result.get('row_count', 0)} rows - insufficient")
+                logger.info("Falling back to OLTP database...")
+
+                oltp_result = self._execute_query_on_connection(query, self.oltp_conn, "OLTP")
+
+                self.query_history.append({
+                    "query": query,
+                    "row_count": oltp_result.get("row_count", 0),
+                    "execution_time": oltp_result.get("execution_time", 0),
+                    "db_source": "OLTP",
+                })
+
+                if oltp_result.get("success"):
+                    logger.info(f"OLTP returned {oltp_result['row_count']} rows")
+                    oltp_result["fallback_used"] = True
+                    oltp_result["olap_row_count"] = olap_result.get("row_count", 0)
+                    return oltp_result
+                else:
+                    logger.error(f"OLTP query failed: {oltp_result.get('error')}")
+                    return oltp_result
+
+            # No fallback available or not needed, return OLAP result
+            return olap_result
+
+        except Exception as e:
+            logger.error(f"Error in sql_db_query: {e}")
+            self.transaction_in_error = True
+            if self.conn:
+                self.conn.rollback()
+            return {
+                "success": False,
+                "error": str(e),
                 "data": [],
                 "row_count": 0,
                 "columns": [],
@@ -710,10 +875,17 @@ class DatabaseTools:
             return []
 
     def close(self):
-        """Close database connection"""
+        """Close database connections"""
         if self.conn:
             try:
-                self.conn.rollback()  # Rollback any pending transaction
+                self.conn.rollback()
             except:
                 pass
             self.conn.close()
+
+        if self.oltp_conn:
+            try:
+                self.oltp_conn.rollback()
+            except:
+                pass
+            self.oltp_conn.close()

@@ -1,11 +1,15 @@
 import streamlit as st
 import pandas as pd
-from llm_client import LLMClient
-from database_tools import DatabaseTools
-from rag_metadata_embedder_focused import FocusedColumnEmbedder as MetadataEmbedder
-from rag_enhanced_agent import RAGEnhancedReActAgent
-from config import Config
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from llm_client import LLMClient
+from src.tools.database_tools import DatabaseTools
+from src.embedders.structured_embedder import StructuredMetadataEmbedder as MetadataEmbedder
+from src.agents.rag_agent import EnhancedRAGReActAgent as RAGEnhancedReActAgent
+from src.config.config import Config
 import logging
 from user_database import UserDatabase
 from datetime import datetime
@@ -476,18 +480,19 @@ def initialize_system():
     """Initialize all system components"""
     try:
         llm_client = LLMClient()
-        db_tools = DatabaseTools(Config.DB_CONFIG)
+        # Initialize with dual OLAP/OLTP databases
+        db_tools = DatabaseTools(Config.OLAP_DB_CONFIG, Config.OLTP_DB_CONFIG)
         db_tools.connect()
         embedder = MetadataEmbedder()
 
-        indices_dir = "./rag_indices_focused"
+        indices_dir = "./data/indices/rag_indices"
+
         if Path(indices_dir).exists():
+            logger.info("Loading indices...")
             embedder.load_indices(indices_dir)
         else:
-            embedder.load_and_embed_metadata("HighTower_Metadata(Metadata) (1).csv")
-            embedder.load_and_embed_relationships("HighTower_Metadata(Relationships).csv")
-            embedder.load_and_embed_datamodel("HighTower_Metadata(HighTower_Data_Model) (2).csv")
-            embedder.save_indices(indices_dir)
+            logger.warning("No indices found! Run scripts/setup_embeddings.py first")
+            raise Exception("No RAG indices found. Please run scripts/setup_embeddings.py to create indices.")
 
         agent = RAGEnhancedReActAgent(llm_client, db_tools, embedder)
         user_db = UserDatabase()
@@ -652,12 +657,19 @@ def main():
             st.markdown('<p class="section-header">Results:</p>', unsafe_allow_html=True)
             df = msg['data']
 
-            # Stats
-            st.markdown(
-                f'<span class="stats-badge">{len(df):,} rows</span>'
-                f'<span class="stats-badge">{len(df.columns)} columns</span>',
-                unsafe_allow_html=True
-            )
+            # Stats with DB source info
+            db_source = msg.get('db_source', 'OLAP')
+            fallback_used = msg.get('fallback_used', False)
+            exec_time = msg.get('execution_time', 0)
+
+            stats_html = f'<span class="stats-badge">{len(df):,} rows</span>'
+            stats_html += f'<span class="stats-badge">{len(df.columns)} columns</span>'
+            stats_html += f'<span class="stats-badge">📊 {db_source}</span>'
+            if fallback_used:
+                stats_html += f'<span class="stats-badge">🔄 Fallback</span>'
+            stats_html += f'<span class="stats-badge">⏱️ {exec_time:.2f}s</span>'
+
+            st.markdown(stats_html, unsafe_allow_html=True)
 
             # Data table
             if len(df) > 100:
@@ -758,7 +770,10 @@ def main():
                                 'query': query,
                                 'sql': result['sql'],
                                 'data': df,
-                                'query_id': query_id
+                                'query_id': query_id,
+                                'db_source': exec_result.get('db_source', 'OLAP'),
+                                'fallback_used': exec_result.get('fallback_used', False),
+                                'execution_time': exec_result.get('execution_time', 0)
                             })
                         else:
                             st.session_state['chat_history'].append({

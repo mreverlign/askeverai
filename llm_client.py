@@ -1,7 +1,7 @@
 from openai import OpenAI
 from typing import List, Dict, Optional
 import time
-from config import Config
+from src.config.config import Config
 
 
 class LLMClient:
@@ -14,8 +14,8 @@ class LLMClient:
         # Initialize OpenAI client with custom base URL
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
-        print(f"✅ Connected to LLM at {self.base_url}")
-        print(f"📦 Using model: {self.model}")
+        print(f"Connected to LLM at {self.base_url}")
+        print(f"Using model: {self.model}")
 
     def chat(
         self,

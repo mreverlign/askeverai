@@ -1,7 +1,3 @@
-"""
-SQLite database module for storing user queries, results, and feedback.
-"""
-
 import sqlite3
 from datetime import datetime
 from typing import Optional, Dict, List, Any
@@ -10,7 +6,6 @@ import os
 
 
 class UserDatabase:
-    """Manages user data, queries, and feedback in SQLite."""
 
     def __init__(self, db_path: str = "askeverai_users.db"):
         """Initialize database connection and create tables if needed."""

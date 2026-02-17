@@ -30,6 +30,9 @@ ENV/
 env.bak/
 venv.bak/
 askever-ai/
+data/
+oltp/
+olap/
 
 # PyInstaller
 *.manifest
@@ -101,3 +104,4 @@ config.py
 
 # CSV data files
 *.csv
+architecture.txt
