@@ -312,6 +312,8 @@ class EnhancedRAGReActAgent:
         rag_context: str,
         iteration: int,
         previous_steps: List[Dict],
+        conversation_history: list = None,
+        is_why_query: bool = False,
     ) -> str:
         date_instructions = self.date_handler.create_dateid_replacement_instructions(
             user_query
@@ -328,12 +330,38 @@ class EnhancedRAGReActAgent:
                 elif step["type"] == "observation":
                     steps_context += f"Observation {i}: {step['content']}\n"
 
+        conv_context = ""
+        if conversation_history:
+            conv_context = "## CONVERSATION CONTEXT:\nYou are continuing an ongoing conversation. Previous exchanges:\n"
+            for item in conversation_history[-5:]:
+                conv_context += f"\nUser: {item.get('query', '')}\n"
+                if item.get('sql'):
+                    conv_context += f"SQL Used: {item['sql']}\n"
+                if item.get('answer'):
+                    conv_context += f"Result: {item['answer']}\n"
+            conv_context += "\nUse this context to understand follow-up questions. "
+            conv_context += "If the user says 'it', 'that', 'those', 'break it down', 'more details', etc., refer to the previous context.\n"
+
+        memo_instructions = ""
+        if is_why_query:
+            memo_instructions = """
+## MEMO/EXPLANATION ANALYSIS:
+The user is asking for explanations or reasons. CRITICAL:
+- ALWAYS include the memo column from fact_transaction_detail in your SELECT
+- The memo column (OLTP only) contains notes explaining transactions, adjustments, delays, and changes
+- Include memo alongside other relevant columns so the system can analyze and summarize reasons
+- If asking about changes/drops/increases, also include date-based comparisons when possible
+- Target the OLTP database since memo is only available there
+"""
+
         prompt = f"""You are an expert SQL agent that converts natural language questions into SQL queries.
 You have access to a **PostgreSQL database** and must use the ReAct pattern to solve the query.
 
 {rag_context}
 
 {date_instructions}
+
+{conv_context}
 
 ## USER QUESTION:
 {user_query}
@@ -385,7 +413,7 @@ When generating SQL queries involving these tables, ALWAYS use the following joi
    - "Credit Memo" (transactiontypeid = 1004) = Returns/refunds
    - User says "shipped" or "delivered" -> Use transactiontypeid = 1000
 
-3. **DATA QUALITY RULES (ALWAYS APPLY)**:
+3. **DATA QUALITY RULES (ALWAYS APPLY WHEN f.amount > 0)**:
    - Positive amounts only: WHERE f.amount > 0
    - Exclude tariff items: WHERE f.itemid NOT IN ('Subtotal for Tariff Recovery Fee', 'Subtotal for Canadian Tariff Credit')
    - Use COUNT(DISTINCT) to prevent duplicate counting
@@ -461,6 +489,7 @@ Action: [One of the available actions in format: action_name[parameters]]
 - Action format: sql_db_query[SELECT ...] NOT markdown code blocks
 
 {self._format_column_quick_reference()}
+{memo_instructions}
 Now, proceed with your Thought and Action:
 """
 
@@ -474,7 +503,7 @@ Now, proceed with your Thought and Action:
             lines.append(f"  {table}: {', '.join(cols)}")
         return "\n".join(lines)
 
-    def process_query(self, user_query: str) -> Dict[str, Any]:
+    def process_query(self, user_query: str, conversation_history: list = None) -> Dict[str, Any]:
         try:
             logger.info(f"Processing query: {user_query}")
 
@@ -501,11 +530,22 @@ Now, proceed with your Thought and Action:
             all_sql_queries = []
             all_query_results = []
 
+            why_keywords = ['why', 'reason', 'explain', 'cause', 'drop', 'decrease',
+                            'increase', 'decline', 'happen', 'fell', 'rose', 'grew',
+                            'shrank', 'spike', 'surge', 'changed']
+            is_why_query = any(kw in user_query.lower() for kw in why_keywords)
+
+            if is_why_query:
+                self.recommended_db = "OLTP"
+                logger.info("Why-question detected, forcing OLTP for memo column access")
+
             for iteration in range(1, self.max_iterations + 1):
                 logger.info(f"Iteration {iteration}/{self.max_iterations}")
 
                 prompt = self._create_react_prompt(
-                    user_query, rag_context_str, iteration, previous_steps
+                    user_query, rag_context_str, iteration, previous_steps,
+                    conversation_history=conversation_history,
+                    is_why_query=is_why_query,
                 )
 
                 logger.info("Sending prompt to LLM")

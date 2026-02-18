@@ -105,3 +105,4 @@ config.py
 # CSV data files
 *.csv
 architecture.txt
+*.md
