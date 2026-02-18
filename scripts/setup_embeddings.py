@@ -16,10 +16,11 @@ def main():
     print("Structured RAG System Setup")
     print("="*80)
 
-    olap_schema = "/Users/Arham/Desktop/askeverai_version_1/data/schemas/HighTowerDataModelSchemaOLAP.csv"
-    oltp_schema = "/Users/Arham/Desktop/askeverai_version_1/data/schemas/HighTower_DataModel_Schema(OLTP).csv"
-    relationships = "/Users/Arham/Desktop/askeverai_version_1/data/schemas/HighTowerDataModelSchema.csv"
-    indices_dir = "/Users/Arham/Desktop/askeverai_version_1/data/indices/rag_indices"
+    project_root = Path(__file__).resolve().parent.parent
+    olap_schema = str(project_root / "data" / "schemas" / "HighTowerDataModelSchemaOLAP.csv")
+    oltp_schema = str(project_root / "data" / "schemas" / "HighTower_DataModel_Schema(OLTP).csv")
+    relationships = str(project_root / "data" / "schemas" / "HighTowerDataModelSchema.csv")
+    indices_dir = str(project_root / "data" / "indices" / "rag_indices")
 
     missing_files = []
     for file in [olap_schema, oltp_schema, relationships]:
