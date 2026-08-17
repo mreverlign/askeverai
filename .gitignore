@@ -103,6 +103,12 @@ logs/
 # Project specific
 config.py
 
+# Postgres dumps used to seed Docker (generated locally / on EC2 from S3)
+db-seed/*.sql
+db-seed/*.sql.gz
+db-seed/*.dump
+!db-seed/.gitkeep
+
 # CSV data files
 *.csv
 architecture.txt
