@@ -9,7 +9,6 @@ services:
     ports:
       - "${POSTGRES_HOST_PORT}:5432"
     volumes:
-      # Postgres 18+ stores data under versioned dirs; mount the parent path.
       - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
@@ -17,7 +16,6 @@ services:
       timeout: 5s
       retries: 10
 
-  # One-shot: CSV → Postgres + schema CSVs → RAG indices.
   # Run with: docker compose --profile seed up --build
   seed:
     profiles: ["seed"]
