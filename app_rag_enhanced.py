@@ -482,7 +482,10 @@ def initialize_system():
         llm_client = LLMClient()
         # Initialize with dual OLAP/OLTP databases
         db_tools = DatabaseTools(Config.OLAP_DB_CONFIG, Config.OLTP_DB_CONFIG)
-        db_tools.connect()
+        if not db_tools.connect():
+            # connect() still returns True for the supported OLAP-only mode;
+            # False means the required primary OLAP layer is unavailable.
+            raise RuntimeError("Could not connect to the required OLAP database.")
         embedder = MetadataEmbedder()
 
         indices_dir = "./data/indices/rag_indices"
@@ -662,7 +665,11 @@ def main():
             fallback_used = msg.get('fallback_used', False)
             exec_time = msg.get('execution_time', 0)
 
-            stats_html = f'<span class="stats-badge">{len(df):,} rows</span>'
+            truncated = msg.get('truncated', False)
+            row_label = f"{len(df):,} rows returned"
+            if truncated:
+                row_label += " (capped)"
+            stats_html = f'<span class="stats-badge">{row_label}</span>'
             stats_html += f'<span class="stats-badge">{len(df.columns)} columns</span>'
             stats_html += f'<span class="stats-badge">📊 {db_source}</span>'
             if fallback_used:
@@ -670,6 +677,13 @@ def main():
             stats_html += f'<span class="stats-badge">⏱️ {exec_time:.2f}s</span>'
 
             st.markdown(stats_html, unsafe_allow_html=True)
+
+            if truncated:
+                row_limit = msg.get('row_limit') or len(df)
+                st.warning(
+                    f"The result was capped at {row_limit:,} rows. "
+                    "Counts and rankings shown in this table may not represent the complete result set."
+                )
 
             # Data table
             if len(df) > 100:
@@ -743,8 +757,15 @@ def main():
                     result = system['agent'].process_query(query)
 
                     if result.get('success') and result.get('sql'):
-                        # Execute SQL
-                        exec_result = system['db_tools'].sql_db_query(result['sql'])
+                        # Reuse the ReAct action result; it has already executed
+                        # against the selected database layer.
+                        action_results = result.get('all_query_results', [])
+                        if action_results and action_results[0].get('success'):
+                            exec_result = action_results[0]
+                        else:
+                            exec_result = system['db_tools'].sql_db_query(
+                                result['sql'], target_db=system['agent'].recommended_db
+                            )
 
                         if exec_result.get('success'):
                             df = pd.DataFrame(exec_result['data']) if exec_result.get('data') else pd.DataFrame()
@@ -773,7 +794,9 @@ def main():
                                 'query_id': query_id,
                                 'db_source': exec_result.get('db_source', 'OLAP'),
                                 'fallback_used': exec_result.get('fallback_used', False),
-                                'execution_time': exec_result.get('execution_time', 0)
+                                'execution_time': exec_result.get('execution_time', 0),
+                                'truncated': exec_result.get('truncated', False),
+                                'row_limit': exec_result.get('row_limit')
                             })
                         else:
                             st.session_state['chat_history'].append({

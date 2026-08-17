@@ -1,14 +1,27 @@
-from typing import Dict, Any, List, Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Dict, Any, List, Optional
 from llm_client import LLMClient
 from src.tools.database_tools import DatabaseTools, SchemaContextManager
-from src.embedders.structured_embedder import StructuredMetadataEmbedder
 from src.tools.date_handler import DateHandler
 from src.config.config import Config
+from src.domain.hightower import (
+    DATA_COVERAGE,
+    FACT_ROW_COUNTS,
+    TABLES_BY_LAYER,
+    choose_layer_for_counts,
+    infer_layer_from_query,
+    join_closure,
+    tables_for_query_intent,
+)
 import re
 import difflib
 import sqlparse
 import traceback
 import logging
+
+if TYPE_CHECKING:
+    from src.embedders.structured_embedder import StructuredMetadataEmbedder
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,14 +43,39 @@ class EnhancedRAGReActAgent:
         self.max_iterations = Config.MAX_AGENT_ITERATIONS
         self.recommended_db = None
         self._schema_cache = {}  # {table_name: [col1, col2, ...]} populated during context formatting
+        self._fact_row_counts = dict(FACT_ROW_COUNTS)
+        self._data_coverage = {
+            layer: dict(coverage) for layer, coverage in DATA_COVERAGE.items()
+        }
 
         logger.info("Agent initialized")
 
-    def _extract_relevant_context(self, query: str, top_k: int = 10) -> Dict[str, Any]:
+    def _extract_relevant_context(
+        self, query: str, top_k: int = 10, forced_db: str = None
+    ) -> Dict[str, Any]:
         logger.info(f"Extracting context: {query}")
 
-        layer_decision = self.embedder.search_with_layer_preference(query, top_k=top_k)
-        recommended_db = layer_decision.get("recommended_db", "OLAP")
+        if forced_db:
+            # An intent-level selection is authoritative; avoid doing an
+            # unnecessary second-layer embedding search just to overwrite it.
+            recommended_db = str(forced_db).upper()
+            layer_decision = {
+                "recommended_db": recommended_db,
+                "olap_score": 0.0,
+                "oltp_score": 0.0,
+                "confidence": 1.0,
+                "reason": "domain_intent",
+            }
+        else:
+            layer_decision = self.embedder.search_with_layer_preference(
+                query, top_k=top_k
+            )
+            recommended_db = choose_layer_for_counts(
+                query,
+                layer_decision.get("recommended_db", "OLAP"),
+                self._fact_row_counts.get("OLAP", 0),
+                self._fact_row_counts.get("OLTP", 0),
+            )
 
         logger.info(
             f"Recommended DB: {recommended_db} (OLAP: {layer_decision.get('olap_score', 0):.3f}, OLTP: {layer_decision.get('oltp_score', 0):.3f})"
@@ -53,29 +91,8 @@ class EnhancedRAGReActAgent:
         )
         logger.info(f"Tables ({recommended_db}): {len(table_results)} matches")
 
-        relationship_queries = [query, f"join {query}"]
-        detected_tables = self._detect_table_names(
-            query, column_results + table_results
-        )
-        for table in detected_tables[:3]:
-            relationship_queries.append(f"join {table}")
-
-        all_relationship_results = []
-        seen_relationships = set()
-
-        for rel_query in relationship_queries[:3]:
-            rel_results = self.embedder.search_relationships(rel_query, top_k=top_k)
-            for result in rel_results:
-                rel_key = f"{result.get('primary_table', '')}_{result.get('foreign_table', '')}"
-                if rel_key not in seen_relationships:
-                    seen_relationships.add(rel_key)
-                    all_relationship_results.append(result)
-
-        logger.info(f"Relationships: {len(all_relationship_results)} unique matches")
-
         relevant_tables = set()
         relevant_columns = {}
-        relationships = []
 
         for result in table_results:
             table = result.get("table", "").strip()
@@ -105,36 +122,61 @@ class EnhancedRAGReActAgent:
                         }
                     )
 
-        for result in all_relationship_results:
-            primary_table = result.get("primary_table", "").strip()
-            foreign_table = result.get("foreign_table", "").strip()
-            primary_key = result.get("primary_key", "").strip()
-            foreign_key = result.get("foreign_key", "").strip()
-            rel_type = result.get("relationship_type", "")
-            join_condition = result.get("join_condition", "")
+        # The source relationship CSV has shifted/blank fields and describes
+        # two fact joins incorrectly. Use the validated live-data manifest and
+        # include only the join closure needed by the retrieved tables.
+        available_tables = TABLES_BY_LAYER.get(recommended_db, frozenset())
+        intent_tables = set(tables_for_query_intent(query, recommended_db))
+        if intent_tables:
+            seed_tables = intent_tables
+        else:
+            candidate_scores = {}
+            for result in table_results + column_results:
+                table = result.get("table", "").strip().lower()
+                if table in available_tables:
+                    candidate_scores[table] = max(
+                        candidate_scores.get(table, 0.0),
+                        float(result.get("hybrid_score", 0.0)),
+                    )
+            best_score = max(candidate_scores.values(), default=0.0)
+            threshold = max(0.15, best_score * 0.75)
+            seed_tables = {
+                table
+                for table, score in candidate_scores.items()
+                if score >= threshold
+            }
+            if not seed_tables and candidate_scores:
+                seed_tables = {
+                    max(candidate_scores, key=candidate_scores.get)
+                }
 
-            if primary_table and foreign_table:
-                relevant_tables.add(primary_table.lower())
-                relevant_tables.add(foreign_table.lower())
-
-                relationships.append(
-                    {
-                        "primary_table": primary_table.lower(),
-                        "foreign_table": foreign_table.lower(),
-                        "primary_key": primary_key.lower() if primary_key else "",
-                        "foreign_key": foreign_key.lower() if foreign_key else "",
-                        "join_condition": join_condition,
-                        "relationship_type": rel_type,
-                        "from": primary_table.lower(),
-                        "to": foreign_table.lower(),
-                        "hybrid_score": result.get("hybrid_score", 0),
-                    }
-                )
-
-        relationships.sort(key=lambda x: x.get("hybrid_score", 0), reverse=True)
+        closure = join_closure(recommended_db, seed_tables)
+        relevant_tables = set(closure["tables"])
+        relationships = list(closure["relationships"])
+        all_relationship_results = relationships
+        column_results = [
+            result
+            for result in column_results
+            if result.get("table", "").strip().lower() in relevant_tables
+        ]
+        table_results = [
+            result
+            for result in table_results
+            if result.get("table", "").strip().lower() in relevant_tables
+        ]
+        relevant_columns = {
+            table: columns
+            for table, columns in relevant_columns.items()
+            if table in relevant_tables
+        }
+        logger.info(
+            "Validated relationships (%s): %d",
+            recommended_db,
+            len(relationships),
+        )
 
         context = {
-            "relevant_tables": list(relevant_tables),
+            "relevant_tables": sorted(relevant_tables),
             "relevant_columns": relevant_columns,
             "relationships": relationships,
             "column_results": column_results[:10],
@@ -142,12 +184,39 @@ class EnhancedRAGReActAgent:
             "relationship_results": all_relationship_results[:10],
             "recommended_db": recommended_db,
             "layer_decision": layer_decision,
+            "data_coverage": self._data_coverage.get(recommended_db, {}),
+            "retrieval_schema_notice": (
+                "Actual live schema below is authoritative for names and types; "
+                "legacy embedding descriptions may be stale."
+            ),
         }
 
         logger.info(
             f"Context extracted: Tables={len(relevant_tables)}, Relationships={len(relationships)}"
         )
         return context
+
+    def _refresh_fact_row_counts(self) -> set:
+        """Refresh routing and date cutoffs from live data without failing a query."""
+
+        unavailable_layers = set()
+        for layer in ("OLAP", "OLTP"):
+            try:
+                coverage = self.db_tools.sql_db_fact_coverage(layer)
+                if coverage.get("success"):
+                    self._fact_row_counts[layer] = int(coverage["row_count"])
+                    self._data_coverage[layer] = {
+                        "min_dateid": coverage["min_dateid"],
+                        "max_dateid": coverage["max_dateid"],
+                    }
+                else:
+                    unavailable_layers.add(layer)
+                    self._fact_row_counts[layer] = 0
+            except Exception as error:
+                logger.warning("Could not refresh %s fact count: %s", layer, error)
+                unavailable_layers.add(layer)
+                self._fact_row_counts[layer] = 0
+        return unavailable_layers
 
     def _detect_table_names(self, query: str, search_results: List[Dict]) -> List[str]:
         tables = set()
@@ -173,7 +242,12 @@ class EnhancedRAGReActAgent:
 
         parts.append("## RAG HYBRID SEARCH RESULTS (BM25 + Semantic):")
         parts.append("")
+        parts.append(
+            "**Authority:** Actual database schema and validated relationships below "
+            "override legacy embedding descriptions."
+        )
         parts.append(f"**Search Configuration:**")
+        parts.append(f"- Selected database layer: {self.recommended_db}")
         parts.append(f"- BM25 Weight: {self.embedder.bm25_weight} (keyword matching)")
         parts.append(
             f"- Semantic Weight: {self.embedder.semantic_weight} (conceptual similarity)"
@@ -187,10 +261,12 @@ class EnhancedRAGReActAgent:
             )
             parts.append("")
 
-            top_tables = list(context["relevant_tables"])[:5]
+            top_tables = list(context["relevant_tables"])[:10]
 
             try:
-                schema_result = self.db_tools.sql_db_schema(top_tables)
+                schema_result = self.db_tools.sql_db_schema(
+                    top_tables, target_db=self.recommended_db
+                )
 
                 if schema_result["success"]:
                     for table_name, schema_info in schema_result["schemas"].items():
@@ -250,8 +326,13 @@ class EnhancedRAGReActAgent:
                 if rel["join_condition"]:
                     parts.append(f"   **EXACT JOIN SYNTAX:** `{rel['join_condition']}`")
                     parts.append(
-                        f"   **SQL:** `JOIN {rel['foreign_table']} ON {rel['join_condition']}`"
+                        f"   **SQL:** `JOIN {rel['primary_table']} ON {rel['join_condition']}`"
                     )
+
+                if rel.get("coverage"):
+                    parts.append(f"   Coverage: {rel['coverage']}")
+                if rel.get("note"):
+                    parts.append(f"   Important: {rel['note']}")
 
                 parts.append(f"   Relationship Type: {rel['relationship_type']}")
                 parts.append("")
@@ -300,7 +381,7 @@ class EnhancedRAGReActAgent:
         )
         parts.append("5. **Verify table names** from the relevant tables summary")
         parts.append(
-            "6. **NEVER use ILIKE or LIKE** - Use exact values or LOWER() function for case-insensitive matching"
+            "6. For free-text matching, use ILIKE only when the user asks for a contains/partial match; use = for exact values"
         )
         parts.append("")
 
@@ -316,7 +397,7 @@ class EnhancedRAGReActAgent:
         is_why_query: bool = False,
     ) -> str:
         date_instructions = self.date_handler.create_dateid_replacement_instructions(
-            user_query
+            user_query, layer=self.recommended_db
         )
 
         steps_context = ""
@@ -373,96 +454,61 @@ Generate SQL using the ReAct pattern. Follow these critical rules:
 
 **Iteration {iteration}/{self.max_iterations}**
 
-## JOIN RULES:
-When generating SQL queries involving these tables, ALWAYS use the following join rules:
-1. **Dim_Specifier1.PartnerID joins to Dim_Partner.PartnerID**
-2. **Fact_Transaction_Detail.Specifier1ID joins to Dim_Specifier1.Specifier1ID**
-3. **Dim_EndUser.PartnerID joins to Dim_Partner.PartnerID**
-4. **Fact_Transaction_Detail.EndUserID joins to Dim_EndUser.EndUserID**
-5. **Fact_Transaction_Detail.PartnerID joins directly to Dim_Partner.PartnerID**
-6. **Fact_Transaction_Detail.ItemID joins to Dim_Item.SkuID**
-7. **Dim_Item.SubCategoryID joins to Dim_SubCategory_Item.SubCategoryID**
-8. **Dim_SubCategory_Item.CategoryID joins to Dim_Item_Category.CategoryID**
-9. **Always follow this hierarchy**:
-    -Fact_Transaction_Detail
-        → Dim_Item
-            → Dim_SubCategory_Item
-                → Dim_Item_Category
-
-
-
 ## CRITICAL RULES:
-1. **general Rules MOST CRITICAL always follow**
-   - NEVER join Fact_Transaction_Detail directly to Dim_Partner for Specifier1 or EndUser relationships.
-   - ALWAYS go through the intermediate table (Dim_Specifier1 or Dim_EndUser) when required.
-   - Use Fact_Transaction_Detail as the driving table.
-   - Do NOT invent alternative join paths.
-   - NEVER join Fact_Transaction_Detail directly to Dim_SubCategory_Item.
-   - NEVER join Fact_Transaction_Detail directly to Dim_Item_Category.
-       
-1. **DATES - MOST CRITICAL**: ALWAYS use f.dateid in YYYYMMDD format as INTEGER
-   - FORBIDDEN: WHERE d.date = '2025-11-25' or any date string format
-   - CORRECT: WHERE f.dateid = 20251125 (integer format, no quotes)
-   - CORRECT: WHERE f.dateid BETWEEN 20251101 AND 20251130
-   - DateID format: YYYYMMDD (e.g., 20251125 = November 25, 2025)
+1. **LAYER AND JOINS**:
+   - Execute only on the selected `{self.recommended_db}` layer.
+   - Use only the validated join conditions in the relationship section.
+   - Fact grain is one line: `(transactionid, transactiolineid)`.
+   - Count business transactions with `COUNT(DISTINCT f.transactionid)`.
+   - Join fact `itemid` to `dim_item.skuid`, NEVER to `dim_item.itemid`.
+   - `dim_item.skuid` has one duplicate source sentinel (`'1'`), but no current fact references it.
+   - Fact `specifier1id` and `enduserid` contain partner IDs despite their names. Follow the validated relationships; never join either to the same-named dimension primary key.
+   - When joining `dim_specifier1` or `dim_end_user` by `partnerid`, require `active_flag = 1` to avoid duplicate-row inflation.
+   - For product categories, follow fact -> dim_item -> dim_subcategory_item -> dim_item_category.
+   - `projectedtotal` repeats on fact lines; aggregate it once per transaction, not once per line.
+   - `createdfrom` is transaction-level; join it only to a one-row-per-transaction subquery, never raw fact lines.
 
-2. **TRANSACTION TYPES - BUSINESS LOGIC**:
-   - "Invoice" (transactiontypeid = 1000) = Actual shipment/delivery/revenue
-   - "Sales Order" (transactiontypeid = 1002) = Orders placed, not yet shipped
-   - "Quotation" (transactiontypeid = 1001) = Initial proposals
-   - "Credit Memo" (transactiontypeid = 1004) = Returns/refunds
-   - User says "shipped" or "delivered" -> Use transactiontypeid = 1000
+2. **DATES**:
+   - Transaction-date filters use `f.dateid` as an unquoted YYYYMMDD integer.
+   - Use `closedate`, `createddate`, `shipdate`, `expectedclosedate`, or `oppclosedate` only when the user explicitly asks about that event.
+   - Selected-layer fact coverage is {self._data_coverage.get(self.recommended_db, {})}. Do not reinterpret "current" as "latest available"; a period beyond this range can correctly return no rows.
+   - Treat `oppclosedate` values after year 2100 as source anomalies unless the user explicitly requests them.
 
-3. **DATA QUALITY RULES (ALWAYS APPLY WHEN f.amount > 0)**:
-   - Positive amounts only: WHERE f.amount > 0
-   - Exclude tariff items: WHERE f.itemid NOT IN ('Subtotal for Tariff Recovery Fee', 'Subtotal for Canadian Tariff Credit')
-   - Use COUNT(DISTINCT) to prevent duplicate counting
-   - Active records only: WHERE active_flag = 1 (for dim_end_user, dim_specifier1)
+3. **TRANSACTION TYPES - BUSINESS LOGIC**:
+   - Generic "sales" or "revenue" means Invoice: `f.transactiontypeid = 1000`.
+   - Sales Order / ordered value: `f.transactiontypeid = 1002`.
+   - Quotation / proposal / pipeline: `f.transactiontypeid = 1001`.
+   - Credit Memo / refund / return: `f.transactiontypeid = 1004`.
+   - "Shipped", "delivered", or invoiced also uses `1000`.
+   - Do not sum all transaction types for revenue; that double-counts stages of the lifecycle.
 
-4. **GROUP BY is MANDATORY** when mixing aggregate functions with non-aggregate columns:
+4. **AMOUNT AND DATA QUALITY**:
+   - `amount` is already the source line amount; do not recompute it from quantity × rate.
+   - Preserve negative adjustments and zero-value lines unless the user explicitly asks for positive-only sales.
+   - For net product sales, exclude subtotal-only IDs `Subtotal for Tariff Recovery Fee` and `Subtotal for Canadian Tariff Credit`; do not add this exclusion to unrelated questions.
+   - The `itemtype` and `bifmacategoryname` fields are entirely empty in this extract; do not use them unless requested.
+
+5. **GROUP BY is MANDATORY** when mixing aggregate functions with non-aggregate columns:
    - CORRECT: SELECT c.clientname, SUM(f.amount) FROM ... GROUP BY c.clientname
    - WRONG: SELECT c.clientname, SUM(f.amount) FROM ... (missing GROUP BY)
 
-5. **NEVER use ILIKE or LIKE** - Use exact values or LOWER() for case-insensitive matching:
-   - WRONG: WHERE name ILIKE '%value%'
-   - CORRECT: WHERE LOWER(name) = LOWER('value')
+6. **PRODUCT DISPLAY**:
+   - Join on `dim_item.skuid`; display `dim_item.itemid` and `dim_item.productname` when helpful.
+   - `dim_item.itemid` is a family-level value and is not unique. Group at the level requested by the user.
 
-6. **PRODUCT NAMES**: When user asks for products, SELECT ONLY itemid
+7. **TEXT MATCHING**:
+   - Use `=`/`IN` for known exact values. Use `ILIKE` only when the user requests partial/contains matching.
 
-7. **PostgreSQL Syntax**:
+8. **PostgreSQL and safety**:
    - Use LIMIT N (not TOP N)
    - Window functions available: OVER (PARTITION BY ...)
-
-8.**Product Dimensions:**
-  - **dim_item** (connects via `fact.itemid` = `dim_item.skuid`)
-  - `skuid` - Unique product identifier in dim_item (used for JOIN)
-  - `itemid` - Product ID/SKU (use for display)
-  - Configuration: `option_1`, `option_2`, `option_3` and their values
-  - Links to: `brandpartnerid`, `subcategoryid`
-
-  **CRITICAL - Product Rules:**
-  - `itemid` = Unique product identifier (e.g., "PROD-12345")
-  - Return ONLY itemid for products
-
-9.**Active Records Only** (for specific tables):
-  - `dim_end_user`: `WHERE eu.active_flag = 1`
-  - `dim_specifier1`: `WHERE sp.active_flag = 1`   
+   - Generate exactly one read-only SELECT (or WITH ... SELECT) per action. Never generate INSERT, UPDATE, DELETE, DDL, SELECT INTO, or data-modifying CTEs.
 
 ## HANDLING MULTIPLE QUERIES:
 
-If user asks for multiple separate analyses/tables, generate MULTIPLE queries in ONE Action:
-
-**Example - Multiple Queries:**
-```
-Action: sql_db_query[SELECT c.clientname, SUM(f.amount) as total FROM ... GROUP BY c.clientname]
-sql_db_query[SELECT i.itemid, SUM(f.amount) as total FROM ... GROUP BY i.itemid]
-sql_db_query[SELECT p.partnername, SUM(f.amount) as total FROM ... GROUP BY p.partnername]
-```
-
-When to use multiple queries:
-- "Show me three tables" -> 3 separate queries
-- "Display X AND Y" -> 2 queries
-- "Compare A versus B" -> 2 queries
+Prefer one SQL statement. Combine comparisons with conditional aggregation,
+UNION ALL, or CTEs. The database tool intentionally accepts exactly one
+read-only statement per action.
 ###
 ### ReAct Pattern:
 1. **Thought**: Analyze what you need to do. Reference the ACTUAL DATABASE SCHEMA section above.
@@ -484,7 +530,7 @@ Action: [One of the available actions in format: action_name[parameters]]
 -
 - If unsure, select the ID column.
 - Use EXACT join conditions from "rag_context" section and "JOIN RULES"
-- For dates: Always use dateid as INTEGER in YYYYMMDD format
+- For transaction dates use dateid as an INTEGER in YYYYMMDD format; for explicitly named date events use their actual DATE column
 - For aggregates: Always include GROUP BY for non-aggregate columns
 - Action format: sql_db_query[SELECT ...] NOT markdown code blocks
 
@@ -507,14 +553,44 @@ Now, proceed with your Thought and Action:
         try:
             logger.info(f"Processing query: {user_query}")
 
+            # Schema names overlap across layers but their columns differ. Pick
+            # the layer before retrieval/schema formatting and clear the
+            # per-query schema cache so OLAP columns cannot leak into OLTP.
+            self._schema_cache = {}
+            unavailable_layers = self._refresh_fact_row_counts()
+
+            why_keywords = ['why', 'reason', 'explain', 'cause', 'drop', 'decrease',
+                            'increase', 'decline', 'happen', 'fell', 'rose', 'grew',
+                            'shrank', 'spike', 'surge', 'changed']
+            is_why_query = any(kw in user_query.lower() for kw in why_keywords)
+            layer_override = infer_layer_from_query(user_query)
+            if is_why_query:
+                layer_override = "OLTP"
+            if layer_override in unavailable_layers:
+                error = f"The required {layer_override} database is unavailable."
+                logger.error(error)
+                return {"query": user_query, "error": error, "success": False}
+            if layer_override:
+                logger.info("Query intent selects %s", layer_override)
+
             date_filters = self.date_handler.extract_date_filters(user_query)
             if date_filters["has_date_filter"]:
                 logger.info("Date filters extracted")
 
-            rag_context_data = self._extract_relevant_context(user_query, top_k=10)
-            rag_context_str = self._format_rag_context(rag_context_data)
-
+            rag_context_data = self._extract_relevant_context(
+                user_query, top_k=10, forced_db=layer_override
+            )
             self.recommended_db = rag_context_data.get("recommended_db", "OLAP")
+            if self.recommended_db in unavailable_layers:
+                available = sorted({"OLAP", "OLTP"} - unavailable_layers)
+                if not available:
+                    error = "Neither HighTower database is available."
+                    return {"query": user_query, "error": error, "success": False}
+                self.recommended_db = available[0]
+                rag_context_data = self._extract_relevant_context(
+                    user_query, top_k=10, forced_db=self.recommended_db
+                )
+            rag_context_str = self._format_rag_context(rag_context_data)
 
             if rag_context_data["relationships"]:
                 logger.info("Key relationships found")
@@ -530,15 +606,6 @@ Now, proceed with your Thought and Action:
             all_sql_queries = []
             all_query_results = []
 
-            why_keywords = ['why', 'reason', 'explain', 'cause', 'drop', 'decrease',
-                            'increase', 'decline', 'happen', 'fell', 'rose', 'grew',
-                            'shrank', 'spike', 'surge', 'changed']
-            is_why_query = any(kw in user_query.lower() for kw in why_keywords)
-
-            if is_why_query:
-                self.recommended_db = "OLTP"
-                logger.info("Why-question detected, forcing OLTP for memo column access")
-
             for iteration in range(1, self.max_iterations + 1):
                 logger.info(f"Iteration {iteration}/{self.max_iterations}")
 
@@ -553,6 +620,13 @@ Now, proceed with your Thought and Action:
                     prompt, temperature=0.0, max_tokens=4000
                 )
 
+                # Surface LLM/transport failures instead of mistaking the error
+                # string for a model reply with "No action found".
+                if response.startswith("Error:"):
+                    logger.error("LLM call failed, aborting query: %s", response)
+                    final_results = response
+                    break
+
                 thought = self._extract_section(response, "Thought")
                 if thought:
                     thought_action_log.append({"type": "thought", "content": thought})
@@ -565,7 +639,8 @@ Now, proceed with your Thought and Action:
                     previous_steps.append({"type": "action", "content": action})
                     logger.info(f"Action: {action[:100]}...")
 
-                    observation = self._execute_action(action)
+                    action_result = self._execute_action(action)
+                    observation = action_result["observation"]
                     thought_action_log.append(
                         {"type": "observation", "content": observation}
                     )
@@ -573,28 +648,39 @@ Now, proceed with your Thought and Action:
                         {"type": "observation", "content": observation}
                     )
 
-                    if (
-                        "sql_db_query[" in action.lower()
-                        and "row" in observation.lower()
-                    ):
-                        queries = self._extract_multiple_sql_queries(action)
+                    if action_result.get("kind") == "query" and action_result.get("success"):
+                        queries = action_result.get("queries", [])
                         all_sql_queries.extend(queries)
-
-                        if "Executed" in observation and "quer" in observation:
-                            query_blocks = observation.split("=" * 60)
-                            for block in query_blocks[1:]:
-                                if "Query" in block and "of" in block:
-                                    query_result = {"raw_text": block.strip()}
-                                    rows_match = re.search(r"Rows:\s*(\d+)", block)
-                                    if rows_match:
-                                        query_result["row_count"] = int(
-                                            rows_match.group(1)
-                                        )
-                                    all_query_results.append(query_result)
-
-                        final_sql = self._extract_sql_from_action(action)
+                        all_query_results.extend(action_result.get("results", []))
+                        final_sql = queries[0] if queries else None
                         final_results = observation
                         logger.info("Query executed successfully")
+                        break
+
+                    # Newer instruction-following behavior can regress into
+                    # repeating a discovery action forever. Stop after the same
+                    # action produces the same observation twice in a row.
+                    observations = [
+                        step["content"]
+                        for step in previous_steps
+                        if step["type"] == "observation"
+                    ]
+                    actions = [
+                        step["content"]
+                        for step in previous_steps
+                        if step["type"] == "action"
+                    ]
+                    if (
+                        len(actions) >= 2
+                        and len(observations) >= 2
+                        and actions[-1].strip() == actions[-2].strip()
+                        and observations[-1].strip() == observations[-2].strip()
+                    ):
+                        logger.warning("Stopping repeated identical action")
+                        final_results = (
+                            "Agent repeated the same action without making progress: "
+                            f"{actions[-1]}"
+                        )
                         break
                 else:
                     logger.warning("No action found")
@@ -617,6 +703,9 @@ Now, proceed with your Thought and Action:
                 "relevant_tables": rag_context_data["relevant_tables"],
                 "relationships_used": rag_context_data["relationships"][:5],
                 "success": final_sql is not None,
+                "error": None if final_sql is not None else (
+                    final_results or "The agent did not produce a successful read-only SQL query."
+                ),
             }
 
             logger.info(
@@ -629,24 +718,238 @@ Now, proceed with your Thought and Action:
             logger.error(traceback.format_exc())
             return {"query": user_query, "error": str(e), "success": False}
 
-    def _extract_section(self, text: str, section_name: str) -> Optional[str]:
-        pattern = f"{section_name}:(.+?)(?:Action:|Observation:|Final Answer:|$)"
-        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
+    @staticmethod
+    def _find_matching_square_bracket(text: str, open_index: int) -> Optional[int]:
+        """Find an action wrapper's closing bracket without parsing SQL literals.
+
+        PostgreSQL uses square brackets for arrays and subscripts, so looking for
+        the next ``]`` (or using a finite-depth regex) is not sufficient.  This
+        scanner balances nested brackets and ignores bracket characters inside
+        quoted strings, quoted identifiers, dollar-quoted strings, and comments.
+        """
+
+        if open_index < 0 or open_index >= len(text) or text[open_index] != "[":
+            return None
+
+        depth = 1
+        index = open_index + 1
+        quote = None
+        dollar_tag = None
+        escape_string = False
+        block_comment_depth = 0
+        in_line_comment = False
+
+        while index < len(text):
+            char = text[index]
+            next_char = text[index + 1] if index + 1 < len(text) else ""
+
+            if in_line_comment:
+                if char in "\r\n":
+                    in_line_comment = False
+                index += 1
+                continue
+
+            if block_comment_depth:
+                if char == "/" and next_char == "*":
+                    block_comment_depth += 1
+                    index += 2
+                elif char == "*" and next_char == "/":
+                    block_comment_depth -= 1
+                    index += 2
+                else:
+                    index += 1
+                continue
+
+            if dollar_tag is not None:
+                if text.startswith(dollar_tag, index):
+                    index += len(dollar_tag)
+                    dollar_tag = None
+                else:
+                    index += 1
+                continue
+
+            if quote == "'":
+                if escape_string and char == "\\" and next_char:
+                    index += 2
+                elif char == "'" and next_char == "'":
+                    index += 2
+                elif char == "'":
+                    quote = None
+                    escape_string = False
+                    index += 1
+                else:
+                    index += 1
+                continue
+
+            if quote == '"':
+                if char == '"' and next_char == '"':
+                    index += 2
+                elif char == '"':
+                    quote = None
+                    index += 1
+                else:
+                    index += 1
+                continue
+
+            if char == "-" and next_char == "-":
+                in_line_comment = True
+                index += 2
+                continue
+            if char == "/" and next_char == "*":
+                block_comment_depth = 1
+                index += 2
+                continue
+
+            if char == "'":
+                quote = "'"
+                previous = text[index - 1] if index else ""
+                before_previous = text[index - 2] if index > 1 else ""
+                escape_string = previous in "Ee" and not (
+                    before_previous.isalnum() or before_previous == "_"
+                )
+                index += 1
+                continue
+            if char == '"':
+                quote = '"'
+                index += 1
+                continue
+
+            if char == "$":
+                tag_match = re.match(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$", text[index:])
+                if tag_match:
+                    dollar_tag = tag_match.group(0)
+                    index += len(dollar_tag)
+                    continue
+
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    return index
+
+            index += 1
+
         return None
+
+    def _find_bracketed_action_calls(
+        self, text: str, action_name: str
+    ) -> List[Dict[str, Any]]:
+        """Return balanced ``action_name[...]`` calls and their source spans."""
+
+        calls = []
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(action_name)}\s*\[",
+            re.IGNORECASE,
+        )
+        search_position = 0
+
+        while True:
+            match = pattern.search(text, search_position)
+            if not match:
+                break
+
+            open_index = match.end() - 1
+            close_index = self._find_matching_square_bracket(text, open_index)
+            if close_index is None:
+                search_position = match.end()
+                continue
+
+            calls.append(
+                {
+                    "start": match.start(),
+                    "end": close_index + 1,
+                    "argument": text[open_index + 1 : close_index],
+                }
+            )
+            search_position = close_index + 1
+
+        return calls
+
+    def _extract_section(self, text: str, section_name: str) -> Optional[str]:
+        # Actions are structured wrappers.  Extract the complete balanced call
+        # so section-like words inside SQL literals cannot truncate the query.
+        if section_name.lower() == "action":
+            marker_pattern = re.compile(
+                r"^[ \t]*Action\s*:", re.IGNORECASE | re.MULTILINE
+            )
+            markers = list(marker_pattern.finditer(text))
+            if not markers:
+                markers = list(re.finditer(r"\bAction\s*:", text, re.IGNORECASE))
+
+            action_names = (
+                "sql_db_query_checker",
+                "sql_db_query",
+                "sql_db_schema",
+                "sql_db_list_tables",
+            )
+            for marker in markers:
+                remainder = text[marker.end() :]
+                calls = [
+                    call
+                    for name in action_names
+                    for call in self._find_bracketed_action_calls(remainder, name)
+                ]
+                if calls:
+                    first_call = min(calls, key=lambda call: call["start"])
+                    # Preserve every action wrapper in this section so the
+                    # executor can enforce its exactly-one-query policy.  A
+                    # section-looking label inside any balanced wrapper is SQL
+                    # content, not the beginning of the next ReAct section.
+                    boundary = None
+                    section_markers = re.finditer(
+                        r"^[ \t]*(?:Thought|Action|Observation|Final Answer)\s*:",
+                        remainder,
+                        re.IGNORECASE | re.MULTILINE,
+                    )
+                    for candidate in section_markers:
+                        position = candidate.start()
+                        if position <= first_call["start"]:
+                            continue
+                        if any(
+                            call["start"] <= position < call["end"]
+                            for call in calls
+                        ):
+                            continue
+                        boundary = position
+                        break
+
+                    section_end = boundary if boundary is not None else len(remainder)
+                    return remainder[first_call["start"] : section_end].strip()
+
+        # Section labels normally begin a line.  Anchoring them prevents words
+        # such as "Final Answer:" inside an ordinary inline value from acting
+        # as structural delimiters.
+        marker = re.search(
+            rf"^[ \t]*{re.escape(section_name)}\s*:",
+            text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if marker:
+            remainder = text[marker.end() :]
+            boundary = re.search(
+                r"^[ \t]*(?:Thought|Action|Observation|Final Answer)\s*:",
+                remainder,
+                re.IGNORECASE | re.MULTILINE,
+            )
+            return remainder[: boundary.start() if boundary else None].strip()
+
+        # Keep compatibility with compact one-line model responses.
+        pattern = (
+            rf"{re.escape(section_name)}\s*:(.+?)"
+            r"(?:Thought\s*:|Action\s*:|Observation\s*:|Final Answer\s*:|$)"
+        )
+        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        return match.group(1).strip() if match else None
 
     def _extract_multiple_sql_queries(self, action: str) -> List[str]:
         queries = []
-        pattern = r"sql_db_query\[((?:[^\[\]]|\[(?:[^\[\]]|\[[^\[\]]*\])*\])*)\]"
-        matches = re.finditer(pattern, action, re.IGNORECASE | re.DOTALL)
+        calls = self._find_bracketed_action_calls(action, "sql_db_query")
 
-        for match in matches:
-            sql = match.group(1).strip()
+        for call in calls:
+            sql = call["argument"].strip()
             sql = self._clean_sql_query(sql)
-            if sql and sql.upper().startswith(
-                ("SELECT", "WITH", "INSERT", "UPDATE", "DELETE")
-            ):
+            if sql and sql.upper().startswith(("SELECT", "WITH")):
                 queries.append(sql)
 
         if queries:
@@ -655,35 +958,45 @@ Now, proceed with your Thought and Action:
 
         sql = self._extract_sql_from_action(action)
         if sql:
-            if ";" in sql:
-                for query in sql.split(";"):
-                    query = query.strip()
-                    if query and query.upper().startswith(
-                        ("SELECT", "WITH", "INSERT", "UPDATE", "DELETE")
-                    ):
-                        queries.append(query)
-            else:
+            if sql.upper().startswith(("SELECT", "WITH")):
                 queries.append(sql)
 
         return queries
 
-    def _execute_action(self, action: str) -> str:
+    def _execute_action(self, action: str) -> Dict[str, Any]:
         try:
             action_lower = action.lower()
 
             if "sql_db_list_tables" in action_lower:
-                result = self.db_tools.sql_db_list_tables()
+                result = self.db_tools.sql_db_list_tables(
+                    target_db=self.recommended_db
+                )
                 if result["success"]:
-                    return f"Available tables: {', '.join(result['tables'])}"
+                    return {
+                        "kind": "list_tables",
+                        "success": True,
+                        "observation": (
+                            f"Available {self.recommended_db} tables: "
+                            f"{', '.join(result['tables'])}"
+                        ),
+                        "result": result,
+                    }
                 else:
-                    return (
-                        f"Error listing tables: {result.get('error', 'Unknown error')}"
-                    )
+                    return {
+                        "kind": "list_tables",
+                        "success": False,
+                        "observation": (
+                            f"Error listing tables: {result.get('error', 'Unknown error')}"
+                        ),
+                        "result": result,
+                    }
 
             if "sql_db_schema" in action_lower:
                 tables = self._extract_tables_from_action(action)
                 if tables:
-                    result = self.db_tools.sql_db_schema(tables)
+                    result = self.db_tools.sql_db_schema(
+                        tables, target_db=self.recommended_db
+                    )
                     if result["success"]:
                         schema_output = []
                         for table_name, schema_info in result["schemas"].items():
@@ -710,20 +1023,65 @@ Now, proceed with your Thought and Action:
                                 f"Row Count: {schema_info['row_count']:,}"
                             )
 
-                        return "\n".join(schema_output)
+                            self._schema_cache[table_name.lower()] = [
+                                column["name"].lower()
+                                for column in schema_info["columns"]
+                            ]
+
+                        if not schema_output:
+                            return {
+                                "kind": "schema",
+                                "success": False,
+                                "observation": (
+                                    f"No requested tables exist in {self.recommended_db}: "
+                                    f"{', '.join(tables)}"
+                                ),
+                                "result": result,
+                            }
+                        return {
+                            "kind": "schema",
+                            "success": True,
+                            "observation": "\n".join(schema_output),
+                            "result": result,
+                        }
                     else:
-                        return f"Error getting schema: {result.get('error', 'Unknown error')}"
+                        return {
+                            "kind": "schema",
+                            "success": False,
+                            "observation": f"Error getting schema: {result.get('error', 'Unknown error')}",
+                            "result": result,
+                        }
+                return {
+                    "kind": "schema",
+                    "success": False,
+                    "observation": "No table names were provided for schema lookup",
+                }
 
             if "sql_db_query_checker" in action_lower:
                 sql = self._extract_sql_from_action(action)
                 if sql:
-                    result = self.db_tools.sql_db_query_checker(sql)
+                    result = self.db_tools.sql_db_query_checker(
+                        sql, target_db=self.recommended_db
+                    )
                     if result["success"]:
-                        return (
-                            f"Query validation: Valid - {result.get('message', 'OK')}"
-                        )
+                        return {
+                            "kind": "query_checker",
+                            "success": True,
+                            "observation": f"Query validation: Valid - {result.get('message', 'OK')}",
+                            "result": result,
+                        }
                     else:
-                        return f"Query validation: Invalid - {result.get('error', 'Unknown error')}"
+                        return {
+                            "kind": "query_checker",
+                            "success": False,
+                            "observation": f"Query validation: Invalid - {result.get('error', 'Unknown error')}",
+                            "result": result,
+                        }
+                return {
+                    "kind": "query_checker",
+                    "success": False,
+                    "observation": "No SQL query was provided for validation",
+                }
 
             if (
                 "sql_db_query" in action_lower
@@ -733,7 +1091,25 @@ Now, proceed with your Thought and Action:
                 sql_queries = self._extract_multiple_sql_queries(action)
 
                 if not sql_queries:
-                    return "No valid SQL queries found in action"
+                    return {
+                        "kind": "query",
+                        "success": False,
+                        "observation": "No valid read-only SQL query found in action",
+                        "queries": [],
+                        "results": [],
+                    }
+
+                if len(sql_queries) != 1:
+                    return {
+                        "kind": "query",
+                        "success": False,
+                        "observation": (
+                            "Exactly one SQL statement is allowed per action; "
+                            "combine the analysis with CTEs or UNION ALL."
+                        ),
+                        "queries": sql_queries,
+                        "results": [],
+                    }
 
                 all_results = []
                 total_execution_time = 0
@@ -774,7 +1150,12 @@ Now, proceed with your Thought and Action:
                                     "success": True,
                                     "row_count": result["row_count"],
                                     "data": result["data"],
+                                    "columns": result.get("columns", []),
                                     "execution_time": result.get("execution_time", 0),
+                                    "db_source": result.get("db_source"),
+                                    "fallback_used": result.get("fallback_used", False),
+                                    "truncated": result.get("truncated", False),
+                                    "row_limit": result.get("row_limit"),
                                     "preview": df.head(10).to_string(),
                                 }
                             )
@@ -786,7 +1167,12 @@ Now, proceed with your Thought and Action:
                                     "success": True,
                                     "row_count": 0,
                                     "data": [],
+                                    "columns": result.get("columns", []),
                                     "execution_time": result.get("execution_time", 0),
+                                    "db_source": result.get("db_source"),
+                                    "fallback_used": result.get("fallback_used", False),
+                                    "truncated": result.get("truncated", False),
+                                    "row_limit": result.get("row_limit"),
                                     "message": "Query executed successfully but returned no rows",
                                 }
                             )
@@ -797,6 +1183,7 @@ Now, proceed with your Thought and Action:
                                 "sql": sql,
                                 "success": False,
                                 "error": result.get("error", "Unknown error"),
+                                "db_source": result.get("db_source"),
                             }
                         )
 
@@ -828,12 +1215,28 @@ Now, proceed with your Thought and Action:
                             f"Failed: {result.get('error', 'Unknown error')}"
                         )
 
-                return "\n".join(response_parts)
+                return {
+                    "kind": "query",
+                    "success": bool(all_results) and all(
+                        result["success"] for result in all_results
+                    ),
+                    "observation": "\n".join(response_parts),
+                    "queries": sql_queries,
+                    "results": all_results,
+                }
 
-            return "Action not recognized. Please use proper format: sql_db_query[SELECT ...]"
+            return {
+                "kind": "unknown",
+                "success": False,
+                "observation": "Action not recognized. Please use proper format: sql_db_query[SELECT ...]",
+            }
 
         except Exception as e:
-            return f"Error executing action: {str(e)}"
+            return {
+                "kind": "error",
+                "success": False,
+                "observation": f"Error executing action: {str(e)}",
+            }
 
     def _extract_tables_from_action(self, action: str) -> List[str]:
         match = re.search(r"sql_db_schema\[(.*?)\]", action, re.IGNORECASE)
@@ -845,16 +1248,11 @@ Now, proceed with your Thought and Action:
     def _extract_sql_from_action(self, action: str) -> Optional[str]:
         sql = None
 
-        match = re.search(r"sql_db_query\[(.+)\]", action, re.IGNORECASE | re.DOTALL)
-        if match:
-            sql = match.group(1).strip()
-
-        if not sql:
-            match = re.search(
-                r"sql_db_query_checker\[(.+)\]", action, re.IGNORECASE | re.DOTALL
-            )
-            if match:
-                sql = match.group(1).strip()
+        for action_name in ("sql_db_query", "sql_db_query_checker"):
+            calls = self._find_bracketed_action_calls(action, action_name)
+            if calls:
+                sql = calls[0]["argument"].strip()
+                break
 
         if not sql:
             match = re.search(
@@ -865,10 +1263,10 @@ Now, proceed with your Thought and Action:
 
         if not sql:
             match = re.search(
-                r"\b(SELECT\s+.+?)(?:;|\]|```|$)", action, re.IGNORECASE | re.DOTALL
+                r"\b(?:SELECT|WITH)\b", action, re.IGNORECASE
             )
             if match:
-                sql = match.group(1).strip()
+                sql = action[match.start() :].strip()
 
         if sql:
             sql = self._clean_sql_query(sql)
@@ -879,10 +1277,12 @@ Now, proceed with your Thought and Action:
         if not sql:
             return sql
 
-        sql = sql.rstrip(";").rstrip("]").strip()
+        sql = sql.strip()
+        if sql.endswith(";"):
+            sql = sql[:-1].rstrip()
         sql = re.sub(r"^```\w*\s*", "", sql)
         sql = re.sub(r"\s*```$", "", sql)
-        sql = re.sub(r"\s+", " ", sql).strip()
+        sql = sql.strip()
 
         try:
             parsed = sqlparse.parse(sql)
@@ -890,7 +1290,7 @@ Now, proceed with your Thought and Action:
                 stmt = parsed[0]
                 stmt_type = stmt.get_type()
 
-                if stmt_type in ("SELECT", "INSERT", "UPDATE", "DELETE", "UNKNOWN"):
+                if stmt_type in ("SELECT", "UNKNOWN"):
                     sql = sqlparse.format(
                         sql, reindent=False, keyword_case="upper", strip_whitespace=True
                     )
@@ -903,6 +1303,12 @@ Now, proceed with your Thought and Action:
         result = {"valid": True, "errors": [], "warnings": []}
 
         try:
+            read_only = self.db_tools._validate_read_only_query(sql)
+            if not read_only["success"]:
+                result["valid"] = False
+                result["errors"].append(read_only["error"])
+                return result
+
             parsed = sqlparse.parse(sql)
             if not parsed or len(parsed) == 0:
                 result["valid"] = False
@@ -910,13 +1316,6 @@ Now, proceed with your Thought and Action:
                 return result
 
             sql_upper = sql.upper()
-
-            dangerous_keywords = ["DROP", "DELETE", "TRUNCATE", "ALTER", "CREATE"]
-            for keyword in dangerous_keywords:
-                if keyword in sql_upper:
-                    result["valid"] = False
-                    result["errors"].append(f"Dangerous operation: {keyword}")
-                    return result
 
             if re.search(r"\bJOIN\b", sql_upper) and not re.search(
                 r"\bON\b", sql_upper
@@ -961,12 +1360,6 @@ Now, proceed with your Thought and Action:
                 result["valid"] = False
                 result["errors"].append(
                     "TOP is SQL Server syntax. Use LIMIT for PostgreSQL"
-                )
-
-            if re.search(r"\b(ILIKE|LIKE)\b", sql_upper):
-                result["valid"] = False
-                result["errors"].append(
-                    "Do NOT use ILIKE or LIKE. Use exact values with = or IN operators."
                 )
 
             # Validate column names against cached schema

@@ -5,6 +5,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import logging
 from pathlib import Path
+import shutil
+import tempfile
 from src.embedders.structured_embedder import StructuredMetadataEmbedder
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
@@ -19,11 +21,10 @@ def main():
     project_root = Path(__file__).resolve().parent.parent
     olap_schema = str(project_root / "data" / "schemas" / "HighTowerDataModelSchemaOLAP.csv")
     oltp_schema = str(project_root / "data" / "schemas" / "HighTower_DataModel_Schema(OLTP).csv")
-    relationships = str(project_root / "data" / "schemas" / "HighTowerDataModelSchema.csv")
     indices_dir = str(project_root / "data" / "indices" / "rag_indices")
 
     missing_files = []
-    for file in [olap_schema, oltp_schema, relationships]:
+    for file in [olap_schema, oltp_schema]:
         if not Path(file).exists():
             missing_files.append(file)
 
@@ -34,11 +35,6 @@ def main():
         sys.exit(1)
 
     print("All schema files found\n")
-
-    if Path(indices_dir).exists():
-        print("Removing old indices")
-        import shutil
-        shutil.rmtree(indices_dir)
 
     embedder = StructuredMetadataEmbedder(bm25_weight=0.6, semantic_weight=0.4)
 
@@ -55,11 +51,31 @@ def main():
     oltp_tbl_count = embedder.load_and_embed_oltp_tables(oltp_schema)
 
     print("Processing relationships...")
-    rel_count = embedder.load_and_embed_relationships(relationships)
+    rel_count = embedder.load_and_embed_relationships()
 
     print(f"Saving to {indices_dir}...")
-    embedder.save_indices(indices_dir)
-    print("Saved\n")
+    indices_path = Path(indices_dir)
+    indices_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(
+        tempfile.mkdtemp(prefix=".rag_indices_", dir=indices_path.parent)
+    )
+    backup_path = indices_path.with_name(f".{indices_path.name}.previous")
+    try:
+        embedder.save_indices(str(temp_dir))
+        if backup_path.exists():
+            shutil.rmtree(backup_path)
+        if indices_path.exists():
+            indices_path.replace(backup_path)
+        temp_dir.replace(indices_path)
+        if backup_path.exists():
+            shutil.rmtree(backup_path)
+    except Exception:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        if backup_path.exists() and not indices_path.exists():
+            backup_path.replace(indices_path)
+        raise
+    print("Saved atomically\n")
 
     print("="*80)
     print("Testing")

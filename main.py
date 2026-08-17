@@ -16,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from llm_client import LLMClient
 from src.tools.database_tools import DatabaseTools
-from src.embedders.structured_embedder import StructuredMetadataEmbedder as MetadataEmbedder
+from src.embedders.structured_embedder import (
+    StructuredMetadataEmbedder as MetadataEmbedder,
+)
 from src.agents.rag_agent import EnhancedRAGReActAgent as RAGEnhancedReActAgent
 from src.config.config import Config
 from user_database import UserDatabase
@@ -41,7 +43,10 @@ def initialize_system():
     try:
         llm_client = LLMClient()
         db_tools = DatabaseTools(Config.OLAP_DB_CONFIG, Config.OLTP_DB_CONFIG)
-        db_tools.connect()
+        if not db_tools.connect():
+            # connect() returns True when the required OLAP connection works,
+            # including the supported OLAP-only mode when OLTP is unavailable.
+            raise RuntimeError("Could not connect to the required OLAP database.")
         embedder = MetadataEmbedder()
 
         indices_dir = "./data/indices/rag_indices"
@@ -49,7 +54,9 @@ def initialize_system():
             logger.info("Loading indices...")
             embedder.load_indices(indices_dir)
         else:
-            raise Exception("No RAG indices found. Run scripts/setup_embeddings.py first.")
+            raise Exception(
+                "No RAG indices found. Run scripts/setup_embeddings.py first."
+            )
 
         agent = RAGEnhancedReActAgent(llm_client, db_tools, embedder)
         user_db = UserDatabase()
@@ -118,45 +125,96 @@ def format_sql_for_display(sql):
     formatted = sql.strip()
 
     keywords = [
-        'SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN',
-        'INNER JOIN', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
-        'AND', 'OR', 'AS', 'ON', 'IN', 'NOT', 'NULL', 'IS', 'UNION'
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "JOIN",
+        "LEFT JOIN",
+        "RIGHT JOIN",
+        "INNER JOIN",
+        "GROUP BY",
+        "ORDER BY",
+        "HAVING",
+        "LIMIT",
+        "OFFSET",
+        "AND",
+        "OR",
+        "AS",
+        "ON",
+        "IN",
+        "NOT",
+        "NULL",
+        "IS",
+        "UNION",
     ]
 
     for keyword in keywords:
-        formatted = formatted.replace(f' {keyword} ', f'\n{keyword} ')
-        formatted = formatted.replace(f' {keyword.lower()} ', f'\n{keyword} ')
+        formatted = formatted.replace(f" {keyword} ", f"\n{keyword} ")
+        formatted = formatted.replace(f" {keyword.lower()} ", f"\n{keyword} ")
 
-    lines = [line.strip() for line in formatted.split('\n') if line.strip()]
-    formatted = '\n'.join(lines)
+    lines = [line.strip() for line in formatted.split("\n") if line.strip()]
+    formatted = "\n".join(lines)
 
     return formatted
 
 
 def detect_why_question(query):
-    why_keywords = ['why', 'reason', 'explain', 'cause', 'drop', 'decrease',
-                    'increase', 'decline', 'happen', 'fell', 'rose', 'grew',
-                    'shrank', 'spike', 'surge', 'changed']
+    why_keywords = [
+        "why",
+        "reason",
+        "explain",
+        "cause",
+        "drop",
+        "decrease",
+        "increase",
+        "decline",
+        "happen",
+        "fell",
+        "rose",
+        "grew",
+        "shrank",
+        "spike",
+        "surge",
+        "changed",
+    ]
     return any(kw in query.lower() for kw in why_keywords)
 
 
-def generate_answer(llm_client, question, sql, data, conversation_history=None, is_why=False):
+def generate_answer(
+    llm_client,
+    question,
+    sql,
+    data,
+    conversation_history=None,
+    is_why=False,
+    truncated=False,
+    row_limit=None,
+):
     try:
         if not data:
             return "The query returned no results. Try broadening your search criteria or adjusting the filters."
 
         df = pd.DataFrame(data[:50])
         data_preview = df.to_string(index=False)
-        total_rows = len(data)
+        returned_rows = len(data)
+        if truncated:
+            result_summary = (
+                f"at least {returned_rows} rows; the database response was capped "
+                f"at {row_limit or returned_rows}, showing up to 50"
+            )
+        else:
+            result_summary = f"{returned_rows} total rows, showing up to 50"
 
-        has_memo = any('memo' in col.lower() for col in data[0].keys()) if data else False
+        has_memo = (
+            any("memo" in col.lower() for col in data[0].keys()) if data else False
+        )
 
         conv_section = ""
         if conversation_history:
             conv_section = "Previous conversation:\n"
             for item in conversation_history[-3:]:
                 conv_section += f"  User: {item.get('query', '')}\n"
-                if item.get('answer'):
+                if item.get("answer"):
                     conv_section += f"  Assistant: {item['answer']}\n"
             conv_section += "\n"
 
@@ -166,7 +224,7 @@ def generate_answer(llm_client, question, sql, data, conversation_history=None, 
 
 SQL Query: {sql}
 
-Query Results ({total_rows} total rows, showing up to 50):
+Query Results ({result_summary}):
 {data_preview}
 
 Instructions:
@@ -178,6 +236,11 @@ Instructions:
 - Keep it concise: 2-4 sentences for simple queries, a short paragraph for complex ones
 - Do NOT mention SQL, databases, or technical details
 - Do NOT say "based on the data" or "the query shows" - just state the findings directly"""
+
+        if truncated:
+            prompt += """
+- The returned rows are a capped sample, not the complete result set
+- Do not claim a complete ranking, exhaustive count, or overall total unless the SQL itself aggregated it into the returned rows"""
 
         if is_why and has_memo:
             prompt += """
@@ -192,7 +255,7 @@ Instructions:
         response = llm_client.generate(prompt, temperature=0.0, max_tokens=800)
         if response and not response.startswith("Error:"):
             return response.strip()
-        return _fallback_answer(question, data, total_rows)
+        return _fallback_answer(question, data, returned_rows)
 
     except Exception as e:
         logger.error(f"Answer generation failed: {e}")
@@ -204,7 +267,9 @@ def _fallback_answer(question, data, total_rows):
         return "No results found for your query."
 
     columns = list(data[0].keys())
-    numeric_cols = [c for c in columns if isinstance(data[0].get(c), (int, float, Decimal))]
+    numeric_cols = [
+        c for c in columns if isinstance(data[0].get(c), (int, float, Decimal))
+    ]
 
     parts = [f"Found {total_rows:,} result(s)."]
 
@@ -225,10 +290,12 @@ def build_trajectory(thought_process, answer_text=""):
         step = thought_process[i]
 
         if step["type"] == "thought":
-            trajectory.append({
-                "type": "thought",
-                "content": step["content"],
-            })
+            trajectory.append(
+                {
+                    "type": "thought",
+                    "content": step["content"],
+                }
+            )
 
         elif step["type"] == "action":
             action_content = step["content"]
@@ -241,9 +308,14 @@ def build_trajectory(thought_process, answer_text=""):
                 tool_input = match.group(2)
 
             output = None
-            if i + 1 < len(thought_process) and thought_process[i + 1]["type"] == "observation":
+            if (
+                i + 1 < len(thought_process)
+                and thought_process[i + 1]["type"] == "observation"
+            ):
                 obs_content = thought_process[i + 1]["content"]
-                is_failure = obs_content.lower().startswith("failed") or obs_content.lower().startswith("error")
+                is_failure = obs_content.lower().startswith(
+                    "failed"
+                ) or obs_content.lower().startswith("error")
 
                 if is_failure:
                     output = {"success": False, "error": obs_content[:500]}
@@ -251,13 +323,15 @@ def build_trajectory(thought_process, answer_text=""):
                     output = {"success": True, "message": obs_content[:500]}
                 i += 1
 
-            trajectory.append({
-                "type": "action",
-                "tool": tool_name,
-                "input": tool_input,
-                "output": output,
-                "content": action_content,
-            })
+            trajectory.append(
+                {
+                    "type": "action",
+                    "tool": tool_name,
+                    "input": tool_input,
+                    "output": output,
+                    "content": action_content,
+                }
+            )
 
         elif step["type"] == "observation":
             pass
@@ -265,10 +339,12 @@ def build_trajectory(thought_process, answer_text=""):
         i += 1
 
     if answer_text:
-        trajectory.append({
-            "type": "answer",
-            "content": answer_text,
-        })
+        trajectory.append(
+            {
+                "type": "answer",
+                "content": answer_text,
+            }
+        )
 
     return trajectory
 
@@ -376,7 +452,11 @@ async def run_query(request: QueryRequest):
 
     is_why = detect_why_question(request.query)
 
-    conv_history_dicts = [item.model_dump() for item in request.conversation_history] if request.conversation_history else None
+    conv_history_dicts = (
+        [item.model_dump() for item in request.conversation_history]
+        if request.conversation_history
+        else None
+    )
 
     try:
         result = agent.process_query(
@@ -401,8 +481,7 @@ async def run_query(request: QueryRequest):
                 ),
                 "sql_queries": result.get("all_sql_queries", []),
                 "formatted_sql": [
-                    format_sql_for_display(q)
-                    for q in result.get("all_sql_queries", [])
+                    format_sql_for_display(q) for q in result.get("all_sql_queries", [])
                 ],
                 "query_id": None,
                 "db_source": None,
@@ -411,7 +490,16 @@ async def run_query(request: QueryRequest):
                 "relevant_tables": result.get("relevant_tables", []),
             }
 
-        exec_result = db_tools.sql_db_query(result["sql"], target_db=agent.recommended_db)
+        # The ReAct query action has already executed and validated this SQL.
+        # Reuse that structured result instead of running the database query a
+        # second time.
+        action_results = result.get("all_query_results", [])
+        if action_results and action_results[0].get("success"):
+            exec_result = action_results[0]
+        else:
+            exec_result = db_tools.sql_db_query(
+                result["sql"], target_db=agent.recommended_db
+            )
         total_time_before_answer = time.time() - start_time
 
         data = []
@@ -430,9 +518,13 @@ async def run_query(request: QueryRequest):
                 data,
                 conversation_history=conv_history_dicts,
                 is_why=is_why,
+                truncated=exec_result.get("truncated", False),
+                row_limit=exec_result.get("row_limit"),
             )
         elif not exec_result.get("success"):
-            answer = f"Query execution failed: {exec_result.get('error', 'Unknown error')}"
+            answer = (
+                f"Query execution failed: {exec_result.get('error', 'Unknown error')}"
+            )
         else:
             answer = "The query returned no results. Try broadening your search criteria or adjusting the filters."
 
@@ -463,7 +555,13 @@ async def run_query(request: QueryRequest):
             "metadata": {
                 "total_time": total_time,
                 "iterations": result.get("iterations", 0),
+                # Backward-compatible count of rows actually returned. It is
+                # not necessarily the total matching row count when capped.
                 "row_count": row_count,
+                "returned_row_count": row_count,
+                "truncated": exec_result.get("truncated", False),
+                "row_limit": exec_result.get("row_limit"),
+                "result_complete": not exec_result.get("truncated", False),
             },
             "trajectory": build_trajectory(
                 result.get("thought_process", []),
@@ -485,4 +583,5 @@ async def run_query(request: QueryRequest):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
