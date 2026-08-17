@@ -1,4 +1,4 @@
-FROM postgres:16-alpine
+FROM postgres:18-alpine
 
 # Bake init scripts into the image so Docker Desktop bind-mount +x/noexec
 # does not break shebang execution ("bad interpreter: Permission denied").
