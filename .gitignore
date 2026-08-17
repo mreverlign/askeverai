@@ -10,8 +10,9 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Only ignore Python venv lib dirs at repo root (not Askeverai-frontend/src/lib)
+/lib/
+/lib64/
 parts/
 sdist/
 var/
