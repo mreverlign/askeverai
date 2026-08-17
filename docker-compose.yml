@@ -9,13 +9,36 @@ services:
     ports:
       - "${POSTGRES_HOST_PORT}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./db-seed:/seed:ro
+      # Postgres 18+ stores data under versioned dirs; mount the parent path.
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # One-shot: CSV → Postgres + schema CSVs → RAG indices.
+  # Run with: docker compose --profile seed up --build
+  seed:
+    profiles: ["seed"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: askeverai-seed
+    env_file:
+      - .env
+    volumes:
+      - ./data/olap:/app/data/olap:ro
+      - ./data/oltp:/app/data/oltp:ro
+      - ./olap:/app/olap:ro
+      - ./oltp:/app/oltp:ro
+      - ./data/schemas:/app/data/schemas:ro
+      - ./data/indices:/app/data/indices
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/app/scripts/seed_docker.sh"]
+    restart: "no"
 
   backend:
     build:
@@ -32,6 +55,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+        required: false
     restart: unless-stopped
 
   frontend:
