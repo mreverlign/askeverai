@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
     container_name: askeverai-postgres
     env_file:
       - .env
@@ -8,16 +10,7 @@ services:
       - "${POSTGRES_HOST_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d
       - ./db-seed:/seed:ro
-    # Bind mounts often keep +x; with noexec that yields "bad interpreter: Permission denied".
-    # Clearing +x makes the official entrypoint *source* the scripts instead of exec'ing them.
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        chmod a-x /docker-entrypoint-initdb.d/*.sh 2>/dev/null || true
-        exec /usr/local/bin/docker-entrypoint.sh postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
       interval: 5s
