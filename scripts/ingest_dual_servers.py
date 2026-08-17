@@ -122,17 +122,7 @@ OLTP_SOURCES: Tuple[SourceTable, ...] = (
 LAYER_SETTINGS = {
     "OLAP": {
         "sources": OLAP_SOURCES,
-        "data_dir": next(
-            (
-                path
-                for path in (
-                    PROJECT_ROOT / "data" / "olap",
-                    PROJECT_ROOT / "olap",
-                )
-                if path.is_dir()
-            ),
-            PROJECT_ROOT / "data" / "olap",
-        ),
+        "data_dir": PROJECT_ROOT / "olap",
         "metadata": PROJECT_ROOT
         / "data"
         / "schemas"
@@ -141,17 +131,7 @@ LAYER_SETTINGS = {
     },
     "OLTP": {
         "sources": OLTP_SOURCES,
-        "data_dir": next(
-            (
-                path
-                for path in (
-                    PROJECT_ROOT / "data" / "oltp",
-                    PROJECT_ROOT / "oltp",
-                )
-                if path.is_dir()
-            ),
-            PROJECT_ROOT / "data" / "oltp",
-        ),
+        "data_dir": PROJECT_ROOT / "oltp",
         "metadata": PROJECT_ROOT
         / "data"
         / "schemas"

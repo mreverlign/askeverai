@@ -28,8 +28,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data/olap:/app/data/olap:ro
-      - ./data/oltp:/app/data/oltp:ro
       - ./olap:/app/olap:ro
       - ./oltp:/app/oltp:ro
       - ./data/schemas:/app/data/schemas:ro
