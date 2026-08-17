@@ -26,6 +26,7 @@ services:
       - "${BACKEND_HOST_PORT:-8000}:8000"
     volumes:
       - ./data/indices:/app/data/indices
+      - ./data/schemas:/app/data/schemas
     depends_on:
       postgres:
         condition: service_healthy
