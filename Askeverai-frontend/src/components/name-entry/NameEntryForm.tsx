@@ -65,7 +65,7 @@ export function NameEntryForm({ onSubmit }: NameEntryFormProps) {
               <h2 className="text-[44px] font-semibold leading-[1.06] tracking-[-0.05em] text-white drop-shadow-[0_3px_20px_rgba(0,0,0,0.3)] xl:text-[51px]">
                 Your data has answers.
                 <span className="mt-1 block bg-gradient-to-r from-[#9cf5f7] via-[#9ca9ff] to-[#b795ff] bg-clip-text text-transparent">
-                  Sequel makes them clear.
+                  Sequel AI makes them clear.
                 </span>
               </h2>
               <p className="mt-5 max-w-md text-sm leading-7 text-white/70">
