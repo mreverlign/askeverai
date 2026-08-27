@@ -58,14 +58,14 @@ export function NameEntryForm({ onSubmit }: NameEntryFormProps) {
             />
 
             <p className="relative m-10 text-xs font-semibold uppercase tracking-[0.3em] text-white/55 xl:m-12">
-              AskEver AI
+              Sequel AI
             </p>
 
             <div className="relative mt-auto max-w-[530px] p-10 pt-24 xl:p-14 xl:pt-28">
               <h2 className="text-[44px] font-semibold leading-[1.06] tracking-[-0.05em] text-white drop-shadow-[0_3px_20px_rgba(0,0,0,0.3)] xl:text-[51px]">
                 Your data has answers.
                 <span className="mt-1 block bg-gradient-to-r from-[#9cf5f7] via-[#9ca9ff] to-[#b795ff] bg-clip-text text-transparent">
-                  AskEver makes them clear.
+                  Sequel makes them clear.
                 </span>
               </h2>
               <p className="mt-5 max-w-md text-sm leading-7 text-white/70">
@@ -82,7 +82,7 @@ export function NameEntryForm({ onSubmit }: NameEntryFormProps) {
 
             <div className="my-9 w-full sm:my-11 lg:my-auto">
               <h1 className="text-[29px] font-semibold tracking-[-0.04em] text-[#242735] sm:text-[34px]">
-                Welcome to AskEver
+                Welcome to Sequel AI
               </h1>
               <p className="mt-3 text-sm leading-6 text-[#666c7b]">
                 Tell us what to call you to personalize your workspace.

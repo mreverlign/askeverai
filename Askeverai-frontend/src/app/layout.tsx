@@ -13,10 +13,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AskEver AI by Everlign — Intelligent data assistant",
+  title: "Sequel AI by Everlign — Intelligent data assistant",
   description:
     "Ask questions about your data in natural language and get clear, traceable answers.",
-  applicationName: "AskEver AI by Everlign",
+  applicationName: "Sequel AI by Everlign",
   icons: {
     icon: [
       {

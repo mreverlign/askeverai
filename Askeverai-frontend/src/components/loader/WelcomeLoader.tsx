@@ -43,7 +43,7 @@ export function WelcomeLoader({
     >
       {!isOverlayVisible && (
         <p className="sr-only" role="status">
-          Opening AskEver AI by Everlign
+          Opening Sequel AI by Everlign
         </p>
       )}
 
@@ -67,7 +67,7 @@ export function WelcomeLoader({
           />
 
           <div className="relative z-10 text-center text-[clamp(4rem,11vw,10.5rem)] font-black leading-[0.86] tracking-[-0.075em] text-[#f7f8fc] drop-shadow-[0_18px_50px_rgba(0,0,0,0.34)]">
-            <span>AskEver</span>
+            <span>Sequel</span>
             <span className="bg-gradient-to-br from-[#26dbe8] via-[#8290ff] to-[#a47bff] bg-clip-text text-transparent">
               AI
             </span>

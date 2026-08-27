@@ -44,7 +44,7 @@ export function ChatSidebar({
           </span>
           <div>
             <p className="text-[15px] font-semibold tracking-[-0.02em] text-[#252832]">
-              AskEver AI
+              Sequel AI
             </p>
             <p className="mt-0.5 text-[10px] font-medium tracking-[0.025em] text-[#8a91a0]">
               by Everlign

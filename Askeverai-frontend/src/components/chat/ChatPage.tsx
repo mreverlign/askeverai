@@ -362,7 +362,7 @@ export function ChatPage() {
               </p>
               {!sidebarOpen && (
                 <p className="hidden text-[11px] text-[#7d8695] sm:block">
-                  AskEver AI <span className="text-[#a0a6b1]">by Everlign</span>
+                  Sequel AI <span className="text-[#a0a6b1]">by Everlign</span>
                 </p>
               )}
             </div>

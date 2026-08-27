@@ -88,7 +88,7 @@ function FeedbackModalContent({
           </button>
         </div>
 
-        <p className="mb-6 text-sm leading-6 text-slate-600 sm:text-base">Your feedback helps improve AskEver AI.</p>
+        <p className="mb-6 text-sm leading-6 text-slate-600 sm:text-base">Your feedback helps improve Sequel AI.</p>
 
         <div className="flex items-center gap-1.5 mb-6">
           {[1, 2, 3, 4, 5].map((value) => (
