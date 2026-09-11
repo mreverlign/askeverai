@@ -266,7 +266,10 @@ Instructions:
 - Format currency/large numbers with commas (e.g., $1,234,567)
 - Highlight the most important insight first
 - If there are notable patterns, trends, or outliers, mention them briefly
-- Keep it concise: 2-4 sentences for simple queries, a short paragraph for complex ones
+- If the results are a ranked list or a per-group breakdown, list EVERY row returned.
+  Group them logically (e.g. by year) and give the key figures for each row.
+  Do not summarise, sample, or stop early - the user asked for the full list
+- Only for a single number or a simple aggregate, keep it to 2-4 sentences
 - Do NOT mention SQL, databases, or technical details
 - Do NOT say "based on the data" or "the query shows" - just state the findings directly"""
 
