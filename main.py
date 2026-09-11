@@ -22,6 +22,7 @@ from src.embedders.structured_embedder import (
 )
 from src.agents.rag_agent import EnhancedRAGReActAgent as RAGEnhancedReActAgent
 from src.config.config import Config
+from src.domain.hightower import is_explanation_query
 from user_database import UserDatabase
 from auth import (
     create_token,
@@ -192,25 +193,8 @@ def format_sql_for_display(sql):
 
 
 def detect_why_question(query):
-    why_keywords = [
-        "why",
-        "reason",
-        "explain",
-        "cause",
-        "drop",
-        "decrease",
-        "increase",
-        "decline",
-        "happen",
-        "fell",
-        "rose",
-        "grew",
-        "shrank",
-        "spike",
-        "surge",
-        "changed",
-    ]
-    return any(kw in query.lower() for kw in why_keywords)
+    """Whether the user wants reasons (memo analysis) rather than just figures."""
+    return is_explanation_query(query)
 
 
 def generate_answer(

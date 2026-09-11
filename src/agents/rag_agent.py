@@ -11,6 +11,7 @@ from src.domain.hightower import (
     TABLES_BY_LAYER,
     choose_layer_for_counts,
     infer_layer_from_query,
+    is_explanation_query,
     join_closure,
     tables_for_query_intent,
 )
@@ -42,7 +43,9 @@ class EnhancedRAGReActAgent:
         self.conversation_history = []
         self.max_iterations = Config.MAX_AGENT_ITERATIONS
         self.recommended_db = None
-        self._schema_cache = {}  # {table_name: [col1, col2, ...]} populated during context formatting
+        self._schema_cache = (
+            {}
+        )  # {table_name: [col1, col2, ...]} populated during context formatting
         self._fact_row_counts = dict(FACT_ROW_COUNTS)
         self._data_coverage = {
             layer: dict(coverage) for layer, coverage in DATA_COVERAGE.items()
@@ -141,14 +144,10 @@ class EnhancedRAGReActAgent:
             best_score = max(candidate_scores.values(), default=0.0)
             threshold = max(0.15, best_score * 0.75)
             seed_tables = {
-                table
-                for table, score in candidate_scores.items()
-                if score >= threshold
+                table for table, score in candidate_scores.items() if score >= threshold
             }
             if not seed_tables and candidate_scores:
-                seed_tables = {
-                    max(candidate_scores, key=candidate_scores.get)
-                }
+                seed_tables = {max(candidate_scores, key=candidate_scores.get)}
 
         closure = join_closure(recommended_db, seed_tables)
         relevant_tables = set(closure["tables"])
@@ -416,9 +415,9 @@ class EnhancedRAGReActAgent:
             conv_context = "## CONVERSATION CONTEXT:\nYou are continuing an ongoing conversation. Previous exchanges:\n"
             for item in conversation_history[-5:]:
                 conv_context += f"\nUser: {item.get('query', '')}\n"
-                if item.get('sql'):
+                if item.get("sql"):
                     conv_context += f"SQL Used: {item['sql']}\n"
-                if item.get('answer'):
+                if item.get("answer"):
                     conv_context += f"Result: {item['answer']}\n"
             conv_context += "\nUse this context to understand follow-up questions. "
             conv_context += "If the user says 'it', 'that', 'those', 'break it down', 'more details', etc., refer to the previous context.\n"
@@ -549,7 +548,9 @@ Now, proceed with your Thought and Action:
             lines.append(f"  {table}: {', '.join(cols)}")
         return "\n".join(lines)
 
-    def process_query(self, user_query: str, conversation_history: list = None) -> Dict[str, Any]:
+    def process_query(
+        self, user_query: str, conversation_history: list = None
+    ) -> Dict[str, Any]:
         try:
             logger.info(f"Processing query: {user_query}")
 
@@ -559,10 +560,10 @@ Now, proceed with your Thought and Action:
             self._schema_cache = {}
             unavailable_layers = self._refresh_fact_row_counts()
 
-            why_keywords = ['why', 'reason', 'explain', 'cause', 'drop', 'decrease',
-                            'increase', 'decline', 'happen', 'fell', 'rose', 'grew',
-                            'shrank', 'spike', 'surge', 'changed']
-            is_why_query = any(kw in user_query.lower() for kw in why_keywords)
+            # Memo text exists only in OLTP, so a genuine "why" question has
+            # to go there. Metric words like "increase" are not on their own a
+            # why question, which is what is_explanation_query screens for.
+            is_why_query = is_explanation_query(user_query)
             layer_override = infer_layer_from_query(user_query)
             if is_why_query:
                 layer_override = "OLTP"
@@ -610,7 +611,10 @@ Now, proceed with your Thought and Action:
                 logger.info(f"Iteration {iteration}/{self.max_iterations}")
 
                 prompt = self._create_react_prompt(
-                    user_query, rag_context_str, iteration, previous_steps,
+                    user_query,
+                    rag_context_str,
+                    iteration,
+                    previous_steps,
                     conversation_history=conversation_history,
                     is_why_query=is_why_query,
                 )
@@ -648,7 +652,9 @@ Now, proceed with your Thought and Action:
                         {"type": "observation", "content": observation}
                     )
 
-                    if action_result.get("kind") == "query" and action_result.get("success"):
+                    if action_result.get("kind") == "query" and action_result.get(
+                        "success"
+                    ):
                         queries = action_result.get("queries", [])
                         all_sql_queries.extend(queries)
                         all_query_results.extend(action_result.get("results", []))
@@ -703,8 +709,13 @@ Now, proceed with your Thought and Action:
                 "relevant_tables": rag_context_data["relevant_tables"],
                 "relationships_used": rag_context_data["relationships"][:5],
                 "success": final_sql is not None,
-                "error": None if final_sql is not None else (
-                    final_results or "The agent did not produce a successful read-only SQL query."
+                "error": (
+                    None
+                    if final_sql is not None
+                    else (
+                        final_results
+                        or "The agent did not produce a successful read-only SQL query."
+                    )
                 ),
             }
 
@@ -907,8 +918,7 @@ Now, proceed with your Thought and Action:
                         if position <= first_call["start"]:
                             continue
                         if any(
-                            call["start"] <= position < call["end"]
-                            for call in calls
+                            call["start"] <= position < call["end"] for call in calls
                         ):
                             continue
                         boundary = position
@@ -968,9 +978,7 @@ Now, proceed with your Thought and Action:
             action_lower = action.lower()
 
             if "sql_db_list_tables" in action_lower:
-                result = self.db_tools.sql_db_list_tables(
-                    target_db=self.recommended_db
-                )
+                result = self.db_tools.sql_db_list_tables(target_db=self.recommended_db)
                 if result["success"]:
                     return {
                         "kind": "list_tables",
@@ -1217,9 +1225,8 @@ Now, proceed with your Thought and Action:
 
                 return {
                     "kind": "query",
-                    "success": bool(all_results) and all(
-                        result["success"] for result in all_results
-                    ),
+                    "success": bool(all_results)
+                    and all(result["success"] for result in all_results),
                     "observation": "\n".join(response_parts),
                     "queries": sql_queries,
                     "results": all_results,
@@ -1262,9 +1269,7 @@ Now, proceed with your Thought and Action:
                 sql = match.group(1).strip()
 
         if not sql:
-            match = re.search(
-                r"\b(?:SELECT|WITH)\b", action, re.IGNORECASE
-            )
+            match = re.search(r"\b(?:SELECT|WITH)\b", action, re.IGNORECASE)
             if match:
                 sql = action[match.start() :].strip()
 
@@ -1365,11 +1370,11 @@ Now, proceed with your Thought and Action:
             # Validate column names against cached schema
             if self._schema_cache:
                 col_refs = re.findall(
-                    r'\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b', sql.lower()
+                    r"\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b", sql.lower()
                 )
                 for table_ref, col_ref in col_refs:
                     # Resolve table aliases from FROM/JOIN clauses
-                    alias_pattern = rf'\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)\s+(?:AS\s+)?{re.escape(table_ref)}\b'
+                    alias_pattern = rf"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)\s+(?:AS\s+)?{re.escape(table_ref)}\b"
                     alias_match = re.search(alias_pattern, sql.lower())
                     actual_table = alias_match.group(1) if alias_match else table_ref
 
@@ -1381,7 +1386,8 @@ Now, proceed with your Thought and Action:
                             )
                             suggestion_msg = (
                                 f" Did you mean '{suggestions[0]}'?"
-                                if suggestions else ""
+                                if suggestions
+                                else ""
                             )
                             result["valid"] = False
                             result["errors"].append(

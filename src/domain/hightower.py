@@ -11,7 +11,6 @@ import re
 from collections import deque
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
-
 OLAP_TABLES = frozenset(
     {
         "dim_date",
@@ -114,7 +113,11 @@ COMMON_RELATIONSHIPS = (
         "fact_transaction_detail", "dateid", "dim_date", "dateid", layer="BOTH"
     ),
     _relationship(
-        "fact_transaction_detail", "itemid", "dim_item", "skuid", layer="BOTH",
+        "fact_transaction_detail",
+        "itemid",
+        "dim_item",
+        "skuid",
+        layer="BOTH",
         note="Join to dim_item.skuid, never dim_item.itemid.",
     ),
     _relationship(
@@ -135,7 +138,9 @@ COMMON_RELATIONSHIPS = (
 
 
 OLTP_RELATIONSHIPS = (
-    _relationship("fact_transaction_detail", "clientid", "dim_client", "clientid", layer="OLTP"),
+    _relationship(
+        "fact_transaction_detail", "clientid", "dim_client", "clientid", layer="OLTP"
+    ),
     _relationship(
         "fact_transaction_detail",
         "clientcategoryid",
@@ -151,7 +156,11 @@ OLTP_RELATIONSHIPS = (
         layer="OLTP",
     ),
     _relationship(
-        "fact_transaction_detail", "designfirmid", "dim_design_firm", "designfirmid", layer="OLTP"
+        "fact_transaction_detail",
+        "designfirmid",
+        "dim_design_firm",
+        "designfirmid",
+        layer="OLTP",
     ),
     _relationship(
         "fact_transaction_detail", "projectid", "dim_project", "projectid", layer="OLTP"
@@ -164,13 +173,25 @@ OLTP_RELATIONSHIPS = (
         layer="OLTP",
     ),
     _relationship(
-        "fact_transaction_detail", "projecttypeid", "dim_project_type", "projecttypeid", layer="OLTP"
+        "fact_transaction_detail",
+        "projecttypeid",
+        "dim_project_type",
+        "projecttypeid",
+        layer="OLTP",
     ),
     _relationship(
-        "fact_transaction_detail", "salesrepid", "dim_sales_rep", "salesrepid", layer="OLTP"
+        "fact_transaction_detail",
+        "salesrepid",
+        "dim_sales_rep",
+        "salesrepid",
+        layer="OLTP",
     ),
     _relationship(
-        "fact_transaction_detail", "specifier1id", "dim_specifier1", "partnerid", layer="OLTP",
+        "fact_transaction_detail",
+        "specifier1id",
+        "dim_specifier1",
+        "partnerid",
+        layer="OLTP",
         coverage="complete_nonunique",
         note=(
             "The fact value is a partner ID despite its name. dim_specifier1.partnerid "
@@ -179,10 +200,18 @@ OLTP_RELATIONSHIPS = (
         ),
     ),
     _relationship(
-        "fact_transaction_detail", "specifier2id", "dim_specifier2", "specifier2id", layer="OLTP"
+        "fact_transaction_detail",
+        "specifier2id",
+        "dim_specifier2",
+        "specifier2id",
+        layer="OLTP",
     ),
     _relationship(
-        "fact_transaction_detail", "enduserid", "dim_end_user", "partnerid", layer="OLTP",
+        "fact_transaction_detail",
+        "enduserid",
+        "dim_end_user",
+        "partnerid",
+        layer="OLTP",
         coverage="complete_nonunique",
         note=(
             "The fact value is a partner ID despite its name. dim_end_user.partnerid "
@@ -194,14 +223,22 @@ OLTP_RELATIONSHIPS = (
         "fact_transaction_detail", "partnerid", "dim_partner", "partnerid", layer="OLTP"
     ),
     _relationship(
-        "fact_transaction_detail", "specifier1id", "dim_partner", "partnerid", layer="OLTP",
+        "fact_transaction_detail",
+        "specifier1id",
+        "dim_partner",
+        "partnerid",
+        layer="OLTP",
         note=(
             "For partner-level analysis this unique join is safer than joining "
             "the non-unique dim_specifier1.partnerid."
         ),
     ),
     _relationship(
-        "fact_transaction_detail", "enduserid", "dim_partner", "partnerid", layer="OLTP",
+        "fact_transaction_detail",
+        "enduserid",
+        "dim_partner",
+        "partnerid",
+        layer="OLTP",
         note=(
             "For partner-level analysis this unique join is safer than joining "
             "the non-unique dim_end_user.partnerid."
@@ -222,7 +259,11 @@ OLTP_RELATIONSHIPS = (
         layer="OLTP",
     ),
     _relationship(
-        "fact_transaction_detail", "endusertypeid", "dim_end_user_type", "endusertypeid", layer="OLTP"
+        "fact_transaction_detail",
+        "endusertypeid",
+        "dim_end_user_type",
+        "endusertypeid",
+        layer="OLTP",
     ),
     _relationship(
         "fact_transaction_detail",
@@ -231,19 +272,45 @@ OLTP_RELATIONSHIPS = (
         "verticalmarketid",
         layer="OLTP",
     ),
-    _relationship("dim_item", "brandpartnerid", "dim_brand_partner_item", "brandpartnerid", layer="OLTP"),
-    _relationship("dim_item", "subcategoryid", "dim_subcategory_item", "subcategoryid", layer="OLTP"),
     _relationship(
-        "dim_subcategory_item", "categoryid", "dim_item_category", "categoryid", layer="OLTP"
+        "dim_item",
+        "brandpartnerid",
+        "dim_brand_partner_item",
+        "brandpartnerid",
+        layer="OLTP",
     ),
-    _relationship("dim_specifier1", "partnerid", "dim_partner", "partnerid", layer="OLTP"),
     _relationship(
-        "dim_end_user", "partnerid", "dim_partner", "partnerid", layer="OLTP",
+        "dim_item",
+        "subcategoryid",
+        "dim_subcategory_item",
+        "subcategoryid",
+        layer="OLTP",
+    ),
+    _relationship(
+        "dim_subcategory_item",
+        "categoryid",
+        "dim_item_category",
+        "categoryid",
+        layer="OLTP",
+    ),
+    _relationship(
+        "dim_specifier1", "partnerid", "dim_partner", "partnerid", layer="OLTP"
+    ),
+    _relationship(
+        "dim_end_user",
+        "partnerid",
+        "dim_partner",
+        "partnerid",
+        layer="OLTP",
         coverage="partial",
         note="Four source partner IDs have no dimension row; use LEFT JOIN when retaining all end users.",
     ),
     _relationship(
-        "dim_partner", "specifiertypeid", "dim_specifier_type", "specifiertypeid", layer="OLTP"
+        "dim_partner",
+        "specifiertypeid",
+        "dim_specifier_type",
+        "specifiertypeid",
+        layer="OLTP",
     ),
     _relationship(
         "dim_partner",
@@ -253,7 +320,11 @@ OLTP_RELATIONSHIPS = (
         layer="OLTP",
     ),
     _relationship(
-        "dim_partner", "endusertypeid", "dim_end_user_type", "endusertypeid", layer="OLTP"
+        "dim_partner",
+        "endusertypeid",
+        "dim_end_user_type",
+        "endusertypeid",
+        layer="OLTP",
     ),
 )
 
@@ -273,6 +344,40 @@ OLTP_INTENT_PATTERN = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+# Words that on their own mean the user is asking for an explanation.
+EXPLANATION_WORD_PATTERN = re.compile(
+    r"\b(?:why|reasons?|explain|explanations?|causes?|caused)\b",
+    re.IGNORECASE,
+)
+
+# Movement vocabulary. On its own this is ordinary analytics language
+# ("top products by increase"), so it only signals a request for reasons when
+# paired with EXPLANATION_FRAMING_PATTERN below.
+MOVEMENT_WORD_PATTERN = re.compile(
+    r"\b(?:drops?|dropped|decreases?|decreased|increases?|increased|"
+    r"declines?|declined|fell|rose|grew|shrank|shrunk|spikes?|spiked|"
+    r"surges?|surged|changed)\b",
+    re.IGNORECASE,
+)
+
+# Framing that turns a movement word into a request for reasons.
+EXPLANATION_FRAMING_PATTERN = re.compile(
+    r"\b(?:what\s+(?:drove|led\s+to|is\s+behind|was\s+behind)|"
+    r"how\s+come|due\s+to|behind\s+the|drivers?\s+of|because)\b",
+    re.IGNORECASE,
+)
+
+
+def is_explanation_query(query: str) -> bool:
+
+    text = str(query or "")
+    if EXPLANATION_WORD_PATTERN.search(text):
+        return True
+    return bool(
+        MOVEMENT_WORD_PATTERN.search(text) and EXPLANATION_FRAMING_PATTERN.search(text)
+    )
 
 
 def infer_layer_from_query(query: str) -> Optional[str]:
@@ -303,7 +408,9 @@ def tables_for_query_intent(query: str, layer: str) -> List[str]:
         tables.add("dim_item_category")
     if re.search(r"\bsubcategor(?:y|ies)\b|\bbifma\b", text):
         tables.add("dim_subcategory_item")
-    if re.search(r"\b(?:product|products|item|items|sku|skus|product\s+family)\b", text):
+    if re.search(
+        r"\b(?:product|products|item|items|sku|skus|product\s+family)\b", text
+    ):
         tables.add("dim_item")
     if re.search(r"\b(?:brand|manufacturer)\b", text):
         tables.update({"dim_item", "dim_brand_partner_item"})
@@ -399,7 +506,9 @@ def join_closure(
 
     relationships = canonical_relationships(layer)
     available = TABLES_BY_LAYER.get(str(layer).upper(), frozenset())
-    seeds = {str(table).lower() for table in seed_tables if str(table).lower() in available}
+    seeds = {
+        str(table).lower() for table in seed_tables if str(table).lower() in available
+    }
     if not seeds:
         seeds = {root_table}
 
