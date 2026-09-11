@@ -3,35 +3,70 @@
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { WelcomeLoader } from "@/components/loader/WelcomeLoader";
-import { NameEntryForm } from "@/components/name-entry/NameEntryForm";
+import { LoginForm, type LoginCredentials } from "@/components/auth/LoginForm";
 import { setSessionUser } from "@/lib/session";
 
-type FlowStep = "intro" | "name-entry" | "chat";
+type FlowStep = "intro" | "login" | "chat";
+
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function HomePage() {
   const router = useRouter();
   const [step, setStep] = useState<FlowStep>("intro");
+  const [loginError, setLoginError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleIntroReveal = useCallback(() => {
-    setStep("name-entry");
+    setStep("login");
   }, []);
 
-  const handleNameSubmit = useCallback(
-    async (name: string) => {
-      setSessionUser(name);
+  const handleLogin = useCallback(
+    async ({ username, password }: LoginCredentials) => {
+      setIsSubmitting(true);
+      setLoginError("");
+
       try {
-        const apiUrl =
-          process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-        await fetch(`${apiUrl}/login`, {
+        const response = await fetch(`${API_BASE_URL}/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: name }),
+          body: JSON.stringify({ username, password }),
         });
+
+        if (!response.ok) {
+          const detail = await response
+            .json()
+            .then((body) => body?.detail)
+            .catch(() => null);
+          setLoginError(
+            typeof detail === "string" && detail
+              ? detail
+              : "Invalid username or password",
+          );
+          return;
+        }
+
+        const account = await response.json();
+        if (!account?.token) {
+          setLoginError("Sign-in failed. Please try again.");
+          return;
+        }
+
+        setSessionUser({
+          username: account.username ?? username,
+          name: account.name,
+          token: account.token,
+          expiresAt: account.expires_at,
+        });
+        setStep("chat");
+        router.replace("/chat");
       } catch {
-        // proceed even if backend is unreachable
+        setLoginError(
+          "Could not reach the server. Check your connection and try again.",
+        );
+      } finally {
+        setIsSubmitting(false);
       }
-      setStep("chat");
-      router.replace("/chat");
     },
     [router],
   );
@@ -41,10 +76,17 @@ export default function HomePage() {
       {step !== "chat" && (
         <WelcomeLoader
           onReveal={handleIntroReveal}
-          isOverlayVisible={step === "name-entry"}
+          isOverlayVisible={step === "login"}
         />
       )}
-      {step === "name-entry" && <NameEntryForm onSubmit={handleNameSubmit} />}
+      {step === "login" && (
+        <LoginForm
+          onSubmit={handleLogin}
+          errorMessage={loginError}
+          onDismissError={() => setLoginError("")}
+          isSubmitting={isSubmitting}
+        />
+      )}
     </>
   );
 }

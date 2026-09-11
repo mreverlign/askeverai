@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { Conversation, ChatMessage } from "@/lib/types";
-import { getSessionUser, clearSessionUser } from "@/lib/session";
+import { getSessionUser, clearSessionUser, authHeaders } from "@/lib/session";
 import { ChatSidebar } from "./ChatSidebar";
 import { ChatInput } from "./ChatInput";
 import { ChatMessageBlock } from "./ChatMessageBlock";
@@ -45,8 +45,27 @@ export function ChatPage() {
   const [mounted, setMounted] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const endExpiredSession = useCallback(() => {
+    clearSessionUser();
+    router.replace("/");
+  }, [router]);
+
   useEffect(() => {
-    setSessionUser(getSessionUser());
+    const user = getSessionUser();
+    setSessionUser(user);
+
+    if (user) {
+      fetch(`${API_BASE_URL}/me`, {
+        headers: { Authorization: `Bearer ${user.token}` },
+      })
+        .then((response) => {
+          if (response.status === 401) endExpiredSession();
+        })
+        .catch(() => {
+          // Network trouble is not proof of a bad token; leave the session be.
+        });
+    }
+
     const desktopViewport = window.matchMedia("(min-width: 1024px)");
     const handleViewportChange = (event: MediaQueryListEvent) => {
       setSidebarOpen(event.matches);
@@ -59,7 +78,7 @@ export function ChatPage() {
       clearTimeout(t);
       desktopViewport.removeEventListener("change", handleViewportChange);
     };
-  }, []);
+  }, [endExpiredSession]);
 
   const activeConversation =
     activeId != null ? conversations.find((c) => c.id === activeId) : null;
@@ -147,14 +166,17 @@ export function ChatPage() {
 
       const response = await fetch(`${API_BASE_URL}/query`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           query: text,
-          username: sessionUser.name,
           conversation_history: convHistory,
         }),
       });
 
+      if (response.status === 401) {
+        endExpiredSession();
+        return;
+      }
       if (!response.ok) throw new Error("Query failed");
 
       const data = await response.json();
@@ -224,7 +246,13 @@ export function ChatPage() {
         ),
       );
     }
-  }, [inputValue, sessionUser, activeConversation, conversations]);
+  }, [
+    inputValue,
+    sessionUser,
+    activeConversation,
+    conversations,
+    endExpiredSession,
+  ]);
 
   const handleFeedback = useCallback(
     async (messageId: string, rating: number, comment: string) => {
@@ -236,14 +264,18 @@ export function ChatPage() {
       try {
         const response = await fetch(`${API_BASE_URL}/feedback`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({
             query_id: msg.queryId,
-            username: sessionUser.name,
             rating,
             feedback_text: comment || null,
           }),
         });
+
+        if (response.status === 401) {
+          endExpiredSession();
+          return;
+        }
 
         if (response.ok) {
           setConversations((prev) =>
@@ -265,7 +297,7 @@ export function ChatPage() {
         console.error("Feedback failed:", err);
       }
     },
-    [sessionUser, activeConversation],
+    [sessionUser, activeConversation, endExpiredSession],
   );
 
   const handleDownloadCsv = useCallback(

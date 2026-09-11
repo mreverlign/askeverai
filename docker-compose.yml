@@ -48,6 +48,8 @@ services:
     volumes:
       - ./data/indices:/app/data/indices
       - ./data/schemas:/app/data/schemas
+      # Accounts are re-read on each login, so edits here need no rebuild
+      - ./users.json:/app/users.json:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -5,10 +5,11 @@ import logging
 from pathlib import Path
 from decimal import Decimal
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Dict, Optional, List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 import pandas as pd
 
@@ -22,6 +23,13 @@ from src.embedders.structured_embedder import (
 from src.agents.rag_agent import EnhancedRAGReActAgent as RAGEnhancedReActAgent
 from src.config.config import Config
 from user_database import UserDatabase
+from auth import (
+    create_token,
+    load_users,
+    users_file_path,
+    verify_credentials,
+    verify_token,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,9 +88,36 @@ async def startup_event():
     if system["status"] != "success":
         logger.error(f"System initialization failed: {system.get('error')}")
 
+    if not load_users():
+        logger.error(
+            f"No usable accounts in {users_file_path()} — logins will be rejected"
+        )
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def require_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> Dict[str, str]:
+    """Reject the request unless it carries a valid, unexpired session token.
+
+    Every protected route depends on this, so the caller's identity always comes
+    from the signed token rather than from anything the client can set.
+    """
+    user = verify_token(credentials.credentials if credentials else "")
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
 
 class LoginRequest(BaseModel):
     username: str
+    password: str
 
 
 class ConversationItem(BaseModel):
@@ -93,13 +128,11 @@ class ConversationItem(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str
-    username: str = "api_user"
     conversation_history: List[ConversationItem] = []
 
 
 class FeedbackRequest(BaseModel):
     query_id: int
-    username: str
     rating: int
     feedback_text: Optional[str] = None
 
@@ -363,33 +396,55 @@ async def login(request: LoginRequest):
         raise HTTPException(status_code=503, detail="System not initialized")
 
     username = request.username.strip()
-    if not username:
-        raise HTTPException(status_code=400, detail="Username is required")
+    if not username or not request.password:
+        raise HTTPException(
+            status_code=400, detail="Username and password are required"
+        )
+
+    account = verify_credentials(username, request.password)
+    if account is None:
+        logger.warning(f"Rejected login attempt for username: {username!r}")
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
     user_db = system["user_db"]
-    user_id = user_db.add_user(username)
-    return {"user_id": user_id, "username": username}
+    user_id = user_db.add_user(account["username"])
+    session = create_token(account["username"], account["name"])
+    return {
+        "user_id": user_id,
+        "username": account["username"],
+        "name": account["name"],
+        "token": session["token"],
+        "expires_at": session["expires_at"],
+    }
 
 
-@app.get("/history/{username}")
-async def get_history(username: str):
+@app.get("/me")
+async def read_current_user(user: Dict[str, str] = Depends(require_user)):
+    """Cheap token check the frontend uses to confirm a session is still good."""
+    return {"username": user["username"], "name": user["name"]}
+
+
+@app.get("/history")
+async def get_history(user: Dict[str, str] = Depends(require_user)):
     if system.get("status") != "success":
         raise HTTPException(status_code=503, detail="System not initialized")
 
     user_db = system["user_db"]
-    history = user_db.get_user_history(username, limit=10)
+    history = user_db.get_user_history(user["username"], limit=10)
     return {"history": history}
 
 
 @app.post("/feedback")
-async def submit_feedback(request: FeedbackRequest):
+async def submit_feedback(
+    request: FeedbackRequest, user: Dict[str, str] = Depends(require_user)
+):
     if system.get("status") != "success":
         raise HTTPException(status_code=503, detail="System not initialized")
 
     user_db = system["user_db"]
     feedback_id = user_db.save_feedback(
         query_id=request.query_id,
-        username=request.username,
+        username=user["username"],
         rating=request.rating,
         feedback_text=request.feedback_text,
     )
@@ -397,7 +452,7 @@ async def submit_feedback(request: FeedbackRequest):
 
 
 @app.get("/schema")
-async def get_schema():
+async def get_schema(user: Dict[str, str] = Depends(require_user)):
     if system.get("status") != "success":
         raise HTTPException(status_code=503, detail="System not initialized")
 
@@ -422,7 +477,7 @@ async def get_schema():
 
 
 @app.get("/examples")
-async def get_examples():
+async def get_examples(user: Dict[str, str] = Depends(require_user)):
     return {
         "examples": [
             "Show me total sales by client",
@@ -440,7 +495,9 @@ async def get_examples():
 
 
 @app.post("/query")
-async def run_query(request: QueryRequest):
+async def run_query(
+    request: QueryRequest, user: Dict[str, str] = Depends(require_user)
+):
     if system.get("status") != "success":
         raise HTTPException(status_code=503, detail="System not initialized")
 
@@ -533,7 +590,7 @@ async def run_query(request: QueryRequest):
         query_id = None
         try:
             query_id = user_db.save_query(
-                username=request.username,
+                username=user["username"],
                 question=request.query,
                 generated_sql=result["sql"],
                 executed_sql=result["sql"],

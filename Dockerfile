@@ -17,7 +17,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; \
 
 ENV HF_HUB_OFFLINE=1
 
-COPY main.py llm_client.py user_database.py app_rag_enhanced.py ./
+COPY main.py llm_client.py user_database.py app_rag_enhanced.py auth.py users.json ./
 COPY src ./src
 COPY scripts ./scripts
 

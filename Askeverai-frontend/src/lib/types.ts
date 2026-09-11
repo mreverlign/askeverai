@@ -53,5 +53,8 @@ export interface Conversation {
 
 export interface SessionUser {
   name: string;
+  username: string;
+  token: string;
+  expiresAt: number;
   createdAt: number;
 }
