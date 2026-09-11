@@ -285,7 +285,7 @@ Instructions:
 
         prompt += "\n\nAnswer:"
 
-        response = llm_client.generate(prompt, temperature=0.0, max_tokens=800)
+        response = llm_client.generate(prompt, temperature=0.1, max_tokens=4000)
         if response and not response.startswith("Error:"):
             return response.strip()
         return _fallback_answer(question, data, returned_rows)
